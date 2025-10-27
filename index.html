@@ -19,7 +19,7 @@
     button.primary { background:var(--accent); color:#04202b; border:none; font-weight:700; }
     button:disabled { opacity:.5 }
     .muted { color:var(--muted) }
-    .pill { display:inline-block; border:1px solid #243041; border-radius:999px; padding:4px 10px; margin-right:8px; font-size:12px; color:#93c5fd }
+    .pill { display:inline-flex; align-items:center; gap:6px; border:1px solid #243041; border-radius:999px; padding:4px 10px; margin:4px 8px 0 0; font-size:12px; color:#93c5fd }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { border-bottom:1px solid #1f2937; padding:6px 8px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .footer { margin-top:24px; color:var(--muted); font-size:12px }
@@ -28,9 +28,7 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>CSV整形（姓名分割・サンプル列準拠）</h1>
-  </header>
+  <header><h1>CSV整形（姓名分割・サンプル列準拠）</h1></header>
   <main>
 
     <div class="card">
@@ -38,7 +36,7 @@
         <div class="col">
           <label>① サンプルCSV（ターゲット列定義）</label>
           <input id="sampleCsv" type="file" accept=".csv" />
-          <p class="muted">※ ここに <code>admin-customer-list-sample.csv</code> を指定。未指定で読み込みに失敗した場合は内蔵の既定列を使用します。</p>
+          <p class="muted">※ <code>admin-customer-list-sample.csv</code> を指定。未指定で取得失敗時は既定列を使用。</p>
           <div id="sampleStatus" class="muted" style="margin-top:6px"></div>
         </div>
         <div class="col">
@@ -56,16 +54,14 @@
         <div class="col">
           <label>オプション</label>
           <div>
-            <span class="pill"><input id="stripAscii" type="checkbox" checked> 漢字＋英字 → 英字を削除</span>
-            <span class="pill"><input id="keepSpaces" type="checkbox" checked> 分割は最初の半角スペースのみ（残りのスペースは名にそのまま残す）</span>
+            <span class="pill"><input id="stripAscii" type="checkbox" checked> 漢字＋英字 → 英字のみ削除（スペースは保持）</span>
+            <span class="pill"><input id="keepSpaces" type="checkbox" checked> 分割は最初の半角スペースのみ（右側の空白は保持）</span>
+            <span class="pill"><input id="useZenkaku" type="checkbox" checked> 全角スペースも分割対象</span>
+            <span class="pill"><input id="useHeuristic" type="checkbox" checked> スペース無しは推定分割</span>
           </div>
         </div>
       </div>
-      <div class="row">
-        <div class="col">
-          <button id="convertBtn" class="primary" disabled>③ 変換してダウンロード（UTF-8-SIG）</button>
-        </div>
-      </div>
+      <div class="row"><div class="col"><button id="convertBtn" class="primary" disabled>③ 変換してダウンロード（UTF-8-SIG）</button></div></div>
     </div>
 
     <div class="card">
@@ -76,9 +72,7 @@
         </div>
         <div class="col">
           <label>入力CSV：先頭行プレビュー</label>
-          <div style="overflow:auto; max-height:260px">
-            <table id="previewTable"></table>
-          </div>
+          <div style="overflow:auto; max-height:260px"><table id="previewTable"></table></div>
         </div>
       </div>
     </div>
@@ -86,14 +80,14 @@
     <details class="card">
       <summary>仕様（クリックで展開）</summary>
       <ul>
-        <li>サンプルCSVの列構成に<strong>完全準拠</strong>。無い列は破棄、足りない列は空欄補完。</li>
-        <li>氏名は<strong>最初の半角スペース</strong>で分割（左＝姓、右＝名）。右側の複数スペースはそのまま残す。</li>
-        <li>漢字＋英字が混在している場合、チェックONで英字を削除してから分割。</li>
-        <li>サンプルCSVが取得できない場合は既定の列（下記）で出力：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
+        <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
+        <li>氏名は<strong>最初の半角スペース</strong>で分割。オプションで全角も分割。</li>
+        <li>漢字＋英字混在は、英字のみ除去してから分割（スペースは維持）。</li>
+        <li>サンプルCSV取得失敗時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
       </ul>
     </details>
 
-    <div class="footer">No server / works offline. Deploy to Vercel as static.</div>
+    <div class="footer">No server / static. Deploy anywhere.</div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
@@ -106,14 +100,15 @@
     const previewTable = document.getElementById('previewTable');
     const stripAscii = document.getElementById('stripAscii');
     const keepSpaces = document.getElementById('keepSpaces');
+    const useZenkaku = document.getElementById('useZenkaku');
+    const useHeuristic = document.getElementById('useHeuristic');
     const sampleStatus = document.getElementById('sampleStatus');
 
-    // 既定のターゲット列（サンプルCSVが読めない時に使用）
     const DEFAULT_TARGET_HEADERS = [
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 日本語→英語ヘッダの対応（入力→出力）
+    // 入力（日本語）→出力（英語）マッピング
     const headerMap = {
       '会社名': 'company_name',
       '会社番号': 'company_number',
@@ -125,29 +120,30 @@
       'supporterId': 'supporter_id'
     };
 
+    // よくある姓（抜粋）
+    const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
+
     let sampleHeaders = [];
     let sourceRows = [];
 
-    function setButtonState() {
-      convertBtn.disabled = !(sampleHeaders.length && sourceRows.length);
-    }
+    function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
-    function tryAutoFullNameCol(headers) {
+    function tryAutoFullNameCol(headers){
       const keys = ['氏名','姓名','名前','お名前','Name','name','フルネーム'];
       const hit = headers.find(h => keys.some(k => h.includes(k)));
       return hit || '';
     }
 
-    function renderPreview() {
+    function renderPreview(){
       previewTable.innerHTML = '';
-      if (!sourceRows.length) return;
+      if(!sourceRows.length) return;
       const headers = Object.keys(sourceRows[0] || {});
       const thead = document.createElement('thead');
       const tr = document.createElement('tr');
       headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });
       thead.appendChild(tr); previewTable.appendChild(thead);
       const tbody = document.createElement('tbody');
-      sourceRows.slice(0, 10).forEach(row => {
+      sourceRows.slice(0,10).forEach(row=>{
         const tr = document.createElement('tr');
         headers.forEach(h => { const td = document.createElement('td'); td.textContent = row[h] ?? ''; tr.appendChild(td); });
         tbody.appendChild(tr);
@@ -155,136 +151,156 @@
       previewTable.appendChild(tbody);
     }
 
-    function normalizeName(raw) {
-      if (raw == null) return '';
-      let s = String(raw);
-      // 英字＋ASCII記号を広めに削除（オプション）
-      if (stripAscii.checked) s = s.replace(/[A-Za-z\u0020\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
-      // 最初の半角スペースだけで分割（残りは名に残す）
-      const i = s.indexOf(' ');
-      if (i === -1) return { last: s, first: '' };
-      const last = s.slice(0, i).trim();
-      const first = keepSpaces.checked ? s.slice(i + 1) : s.slice(i + 1).replace(/\s+/g, ' ').trim();
-      return { last, first };
+    // —— 名前正規化＆分割 —— //
+    function splitWithSpace(s){
+      // 半角スペース優先
+      let i = s.indexOf(' ');
+      if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
+      // オプション：全角スペース
+      if(useZenkaku.checked){
+        i = s.indexOf('　');
+        if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
+      }
+      return null;
     }
 
-    function adoptHeadersFromSample(meta) {
-      if (meta && meta.fields && meta.fields.length) {
+    function heuristicSplitKanji(s){
+      // 1) 辞書に一致する姓で開始
+      for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
+        if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
+      }
+      // 2) 漢字カウントでざっくり
+      const kanji = (s.match(/[\u4E00-\u9FFF]/g) || []).length;
+      if(kanji >= 4) return { last: s.slice(0,2), first: s.slice(2) };
+      if(kanji === 3) return { last: s.slice(0,1), first: s.slice(1) };
+      // 3) 半分割り
+      const mid = Math.max(1, Math.floor(s.length/2));
+      return { last: s.slice(0,mid), first: s.slice(mid) };
+    }
+
+    function normalizeName(raw){
+      if(raw == null) return { last:'', first:'' };
+      let s = String(raw);
+
+      // 英字・ASCII記号を削除（※半角スペースは削除しない）
+      if(stripAscii.checked){
+        s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g,'').trim();
+      }
+
+      // まずスペースでの分割
+      let sp = splitWithSpace(s);
+      if(sp){
+        // 右側のスペースは仕様に合わせて保持
+        if(!keepSpaces.checked) sp.first = sp.first.replace(/\s+/g,' ').trim();
+        return sp;
+      }
+
+      // スペースがない場合、オプションで推定分割
+      if(useHeuristic.checked){
+        return heuristicSplitKanji(s);
+      }
+
+      // どうにもならなければ姓=全体
+      return { last: s, first: '' };
+    }
+
+    function adoptHeadersFromSample(meta){
+      if(meta && meta.fields && meta.fields.length){
         sampleHeaders = meta.fields;
         sampleColsDiv.textContent = sampleHeaders.join(' | ');
         sampleStatus.textContent = 'サンプルCSVを使用中';
-      } else {
-        // フォールバック既定列
+      }else{
         sampleHeaders = DEFAULT_TARGET_HEADERS.slice();
         sampleColsDiv.textContent = sampleHeaders.join(' | ');
         sampleStatus.textContent = 'サンプルCSVが見つからないため既定列を使用中';
       }
     }
 
-    async function parseFile(file, onDone) {
-      return new Promise((resolve) => {
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: 'greedy',
-          complete: (res) => { onDone(res.data || [], res.meta || {}); resolve(); },
-          error: () => { onDone([], {}); resolve(); }
+    async function parseFile(file,onDone){
+      return new Promise(resolve=>{
+        Papa.parse(file,{
+          header:true,
+          skipEmptyLines:'greedy',
+          complete:(res)=>{ onDone(res.data||[],res.meta||{}); resolve(); },
+          error:()=>{ onDone([],{}); resolve(); }
         });
       });
     }
 
-    async function fetchLocalSampleFallback() {
-      try {
-        const resp = await fetch('./admin-customer-list-sample.csv', { credentials: 'same-origin' });
-        if (!resp.ok) throw new Error('fetch failed');
+    async function fetchLocalSampleFallback(){
+      try{
+        const resp = await fetch('./admin-customer-list-sample.csv',{ credentials:'same-origin' });
+        if(!resp.ok) throw new Error('fetch failed');
         const text = await resp.text();
-        const parsed = Papa.parse(text, { header: true });
+        const parsed = Papa.parse(text,{ header:true });
         adoptHeadersFromSample(parsed.meta);
-      } catch (_) {
-        // 認証や404で取れない場合は既定列
+      }catch(_){
         adoptHeadersFromSample({});
-      } finally {
+      }finally{
         setButtonState();
       }
     }
 
-    // サンプルCSV選択 → ヘッダ採用
-    sampleInput.addEventListener('change', async () => {
+    sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
-      if (!f) return;
-      Papa.parse(f, {
-        header: true,
-        preview: 1,
-        complete: (res) => {
-          adoptHeadersFromSample(res.meta || {});
-          setButtonState();
-        }
+      if(!f) return;
+      Papa.parse(f,{
+        header:true, preview:1,
+        complete:(res)=>{ adoptHeadersFromSample(res.meta||{}); setButtonState(); }
       });
     });
 
-    // 入力CSV選択 → プレビュー＆氏名列自動選択
-    sourceInput.addEventListener('change', async () => {
+    sourceInput.addEventListener('change', async()=>{
       const f = sourceInput.files && sourceInput.files[0];
-      if (!f) return;
-      await parseFile(f, (rows) => {
+      if(!f) return;
+      await parseFile(f,(rows)=>{
         sourceRows = rows;
         renderPreview();
         const headers = Object.keys(rows[0] || {});
-        fullNameColSelect.innerHTML = '<option value="">自動検出（氏名/姓名/名前/Name）</option>' + headers.map(h => `<option>${h}</option>`).join('');
+        fullNameColSelect.innerHTML = '<option value=\"\">自動検出（氏名/姓名/名前/Name）</option>' + headers.map(h=>`<option>${h}</option>`).join('');
         fullNameColSelect.value = tryAutoFullNameCol(headers);
         setButtonState();
       });
     });
 
-    // 変換
-    convertBtn.addEventListener('click', () => {
-      if (!sampleHeaders.length || !sourceRows.length) return;
+    convertBtn.addEventListener('click', ()=>{
+      if(!sampleHeaders.length || !sourceRows.length) return;
       const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
 
-      // 英語(last_name/first_name)・日本語(姓/名)両対応
-      const wantLast = sampleHeaders.includes('last_name') || sampleHeaders.includes('姓');
+      const wantLast  = sampleHeaders.includes('last_name')  || sampleHeaders.includes('姓');
       const wantFirst = sampleHeaders.includes('first_name') || sampleHeaders.includes('名');
-      const lastKey  = sampleHeaders.includes('last_name') ? 'last_name' : (sampleHeaders.includes('姓') ? '姓' : null);
-      const firstKey = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
+      const lastKey   = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
+      const firstKey  = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
 
       const out = [];
-      for (const row of sourceRows) {
-        const outRow = Object.fromEntries(sampleHeaders.map(h => [h, '']));
+      for(const row of sourceRows){
+        const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
         // 1) 同名ヘッダはコピー
-        for (const h of sampleHeaders) {
-          if (h in row) outRow[h] = row[h];
-        }
+        for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
         // 1.5) 日本語→英語のヘッダマッピング
-        for (const [jp, en] of Object.entries(headerMap)) {
-          if (en && sampleHeaders.includes(en) && (jp in row)) {
-            outRow[en] = row[jp];
-          }
+        for(const [jp,en] of Object.entries(headerMap)){
+          if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
         // 2) フルネーム→姓/名
-        if (fullNameKey && (wantLast || wantFirst)) {
+        if(fullNameKey && (wantLast || wantFirst)){
           const nm = normalizeName(row[fullNameKey]);
-          if (lastKey)  outRow[lastKey]  = nm.last  || '';
-          if (firstKey) outRow[firstKey] = nm.first || '';
+          if(lastKey)  outRow[lastKey]  = nm.last  || '';
+          if(firstKey) outRow[firstKey] = nm.first || '';
         }
 
         // 3) 1つでも値があれば採用
-        const hasAny = Object.values(outRow).some(v => (v != null) && String(v).trim() !== '');
-        if (hasAny) out.push(outRow);
+        const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
+        if(hasAny) out.push(outRow);
       }
 
-      // CSV生成（UTF-8 BOM付き）
-      const csv = Papa.unparse({ fields: sampleHeaders, data: out.map(r => sampleHeaders.map(h => r[h] ?? '')) }, { quotes: false });
-      const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
-      const blob = new Blob([BOM, csv], { type: 'text/csv' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'converted_admin_customer_list.csv';
-      a.click();
-      URL.revokeObjectURL(a.href);
+      const csv = Papa.unparse({ fields: sampleHeaders, data: out.map(r=>sampleHeaders.map(h=>r[h] ?? '')) }, { quotes:false });
+      const BOM = new Uint8Array([0xEF,0xBB,0xBF]);
+      const blob = new Blob([BOM,csv],{ type:'text/csv' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'converted_admin_customer_list.csv'; a.click(); URL.revokeObjectURL(a.href);
     });
 
-    // 起動時：ローカルの sample を試し、ダメなら既定列を採用
     fetchLocalSampleFallback();
   </script>
 </body>
