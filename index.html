@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>CSV整形（姓名分割・列合わせ）</title>
+  <style>
+    :root { --bg:#0b1220; --panel:#0f172a; --text:#e5e7eb; --muted:#94a3b8; --accent:#38bdf8; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.6 system-ui, -apple-system, Segoe UI, Roboto, Noto Sans JP, sans-serif; }
+    header { padding:16px 20px; border-bottom:1px solid #1f2937; position:sticky; top:0; background:linear-gradient(0deg, rgba(15,23,42,0.2), rgba(15,23,42,0.9)); backdrop-filter:blur(8px); }
+    h1 { font-size:18px; margin:0; letter-spacing:.02em }
+    main { max-width:1100px; margin:24px auto; padding:0 16px; }
+    .card { background:var(--panel); border:1px solid #1f2937; border-radius:16px; padding:16px; margin-bottom:16px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; }
+    .col { flex:1 1 320px; }
+    label { display:block; font-weight:600; margin-bottom:6px; color:var(--muted) }
+    input[type="file"], select, button { width:100%; padding:10px 12px; border-radius:12px; border:1px solid #243041; background:#0b1220; color:var(--text); }
+    button.primary { background:var(--accent); color:#04202b; border:none; font-weight:700; }
+    button:disabled { opacity:.5 }
+    .muted { color:var(--muted) }
+    .pill { display:inline-block; border:1px solid #243041; border-radius:999px; padding:4px 10px; margin-right:8px; font-size:12px; color:#93c5fd }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { border-bottom:1px solid #1f2937; padding:6px 8px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .footer { margin-top:24px; color:var(--muted); font-size:12px }
+    details { border:1px dashed #243041; border-radius:12px; padding:10px 12px; }
+    summary { cursor:pointer; color:#93c5fd; font-weight:600 }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CSV整形（姓名分割・サンプル列準拠）</h1>
+  </header>
+  <main>
+
+    <div class="card">
+      <div class="row">
+        <div class="col">
+          <label>① サンプルCSV（ターゲット列定義）</label>
+          <input id="sampleCsv" type="file" accept=".csv" />
+          <p class="muted">※ ここに <code>admin-customer-list-sample.csv</code> を指定。未指定の場合は同名ファイルをこのページと同じ階層から自動取得を試みます。</p>
+        </div>
+        <div class="col">
+          <label>② 変換する元CSV（人脈リスト）</label>
+          <input id="sourceCsv" type="file" accept=".csv" />
+        </div>
+      </div>
+      <div class="row">
+        <div class="col">
+          <label>フルネーム列（氏名/姓名など）</label>
+          <select id="fullNameCol">
+            <option value="">自動検出（氏名/姓名/名前/Name）</option>
+          </select>
+        </div>
+        <div class="col">
+          <label>オプション</label>
+          <div>
+            <span class="pill"><input id="stripAscii" type="checkbox" checked> 漢字＋英字 → 英字を削除</span>
+            <span class="pill"><input id="keepSpaces" type="checkbox" checked> 分割は最初の半角スペースのみ（残りのスペースは名にそのまま残す）</span>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="col">
+          <button id="convertBtn" class="primary" disabled>③ 変換してダウンロード（UTF-8-SIG）</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="col">
+          <label>サンプル列プレビュー</label>
+          <div id="sampleCols" class="muted">未読込</div>
+        </div>
+        <div class="col">
+          <label>入力CSV：先頭行プレビュー</label>
+          <div style="overflow:auto; max-height:260px">
+            <table id="previewTable"></table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <details class="card">
+      <summary>仕様（クリックで展開）</summary>
+      <ul>
+        <li>サンプルCSVの列構成に<strong>完全準拠</strong>。サンプルにない列は破棄、足りない列は空欄補完。</li>
+        <li>氏名は「<strong>最初の半角スペース</strong>」で分割。左＝姓、右＝名。右側にはスペースが複数あっても<strong>そのまま残す</strong>。</li>
+        <li>漢字＋英字が混在している場合、チェックONで<strong>英字を削除</strong>してから分割。</li>
+        <li>フルネーム列が見つからない場合は自動検出（氏名/姓名/名前/Name）。見つからなければ未分割。</li>
+        <li>完全空行は出力から除外。</li>
+      </ul>
+    </details>
+
+    <div class="footer">Made for quick in-browser CSV shaping. No server. Deploy anywhere (Vercel/Cloudflare Pages etc.).</div>
+  </main>
+
+  <!-- Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <script>
+    const sampleInput = document.getElementById('sampleCsv');
+    const sourceInput = document.getElementById('sourceCsv');
+    const fullNameColSelect = document.getElementById('fullNameCol');
+    const convertBtn = document.getElementById('convertBtn');
+    const sampleColsDiv = document.getElementById('sampleCols');
+    const previewTable = document.getElementById('previewTable');
+    const stripAscii = document.getElementById('stripAscii');
+    const keepSpaces = document.getElementById('keepSpaces');
+
+    let sampleHeaders = [];
+    let sourceRows = [];
+
+    function setButtonState() {
+      convertBtn.disabled = !(sampleHeaders.length && sourceRows.length);
+    }
+
+    function tryAutoFullNameCol(headers) {
+      const keys = ['氏名','姓名','名前','お名前','Name','name','フルネーム'];
+      const hit = headers.find(h => keys.some(k => h.includes(k)));
+      return hit || '';
+    }
+
+    function renderPreview() {
+      previewTable.innerHTML = '';
+      if (!sourceRows.length) return;
+      const headers = Object.keys(sourceRows[0] || {});
+      const thead = document.createElement('thead');
+      const tr = document.createElement('tr');
+      headers.forEach(h => { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); });
+      thead.appendChild(tr); previewTable.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      sourceRows.slice(0, 10).forEach(row => {
+        const tr = document.createElement('tr');
+        headers.forEach(h => { const td = document.createElement('td'); td.textContent = row[h] ?? ''; tr.appendChild(td); });
+        tbody.appendChild(tr);
+      });
+      previewTable.appendChild(tbody);
+    }
+
+    function normalizeName(raw) {
+      if (raw == null) return '';
+      let s = String(raw);
+      // 英字を削除（オプション）※ ASCII のみ・括弧やハイフンなども一緒に落とす
+      if (stripAscii.checked) s = s.replace(/[A-Za-z\u0020\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
+      // 最初の半角スペースでのみ分割（残りはそのままにする）
+      const i = s.indexOf(' ');
+      if (i === -1) return { last: s, first: '' };
+      const last = s.slice(0, i).trim();
+      const first = keepSpaces.checked ? s.slice(i + 1) : s.slice(i + 1).replace(/\s+/g, ' ').trim();
+      return { last, first };
+    }
+
+    async function parseFile(file, onDone) {
+      return new Promise((resolve) => {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: 'greedy',
+          complete: (res) => { onDone(res.data || []); resolve(); },
+          error: () => { onDone([]); resolve(); }
+        });
+      });
+    }
+
+    async function fetchLocalSampleFallback() {
+      try {
+        const resp = await fetch('./admin-customer-list-sample.csv');
+        if (!resp.ok) return;
+        const text = await resp.text();
+        const parsed = Papa.parse(text, { header: true });
+        if (parsed && parsed.meta && parsed.meta.fields) {
+          sampleHeaders = parsed.meta.fields;
+          sampleColsDiv.textContent = sampleHeaders.join(' | ');
+          setButtonState();
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    sampleInput.addEventListener('change', async () => {
+      const f = sampleInput.files && sampleInput.files[0];
+      if (!f) return;
+      Papa.parse(f, {
+        header: true,
+        preview: 1,
+        complete: (res) => {
+          sampleHeaders = (res.meta && res.meta.fields) ? res.meta.fields : [];
+          sampleColsDiv.textContent = sampleHeaders.join(' | ');
+          setButtonState();
+        }
+      });
+    });
+
+    sourceInput.addEventListener('change', async () => {
+      const f = sourceInput.files && sourceInput.files[0];
+      if (!f) return;
+      await parseFile(f, (rows) => {
+        sourceRows = rows;
+        renderPreview();
+        // フルネーム列候補を埋める
+        const headers = Object.keys(rows[0] || {});
+        fullNameColSelect.innerHTML = '<option value="">自動検出（氏名/姓名/名前/Name）</option>' + headers.map(h => `<option>${h}</option>`).join('');
+        fullNameColSelect.value = tryAutoFullNameCol(headers);
+        setButtonState();
+      });
+    });
+
+    convertBtn.addEventListener('click', () => {
+      if (!sampleHeaders.length || !sourceRows.length) return;
+      const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
+
+      const out = [];
+      for (const row of sourceRows) {
+        const outRow = Object.fromEntries(sampleHeaders.map(h => [h, '']));
+
+        // 1) ヘッダ名が一致しているものはコピー
+        for (const h of sampleHeaders) {
+          if (h in row) outRow[h] = row[h];
+        }
+
+        // 2) フルネーム→姓/名（必要な場合のみ）
+        if (fullNameKey && (sampleHeaders.includes('姓') || sampleHeaders.includes('名'))) {
+          const nm = normalizeName(row[fullNameKey]);
+          if (sampleHeaders.includes('姓')) outRow['姓'] = nm.last || '';
+          if (sampleHeaders.includes('名')) outRow['名'] = nm.first || '';
+        }
+
+        // 3) 完全空行はスキップ
+        const isEmpty = Object.values(outRow).every(v => (v == null) || String(v).trim() === '');
+        if (!isEmpty) out.push(outRow);
+      }
+
+      // CSV生成
+      const csv = Papa.unparse({ fields: sampleHeaders, data: out.map(r => sampleHeaders.map(h => r[h] ?? '')) }, { quotes: false });
+      // UTF-8 BOM付与
+      const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([BOM, csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'converted_admin_customer_list.csv';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    // 初期化：ローカルの admin-customer-list-sample.csv を試す
+    fetchLocalSampleFallback();
+  </script>
+</body>
+</html>
