@@ -295,10 +295,18 @@
         if(hasAny) out.push(outRow);
       }
 
-      const csv = Papa.unparse({ fields: sampleHeaders, data: out.map(r=>sampleHeaders.map(h=>r[h] ?? '')) }, { quotes:false });
-      const BOM = new Uint8Array([0xEF,0xBB,0xBF]);
-      const blob = new Blob([BOM,csv],{ type:'text/csv' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'converted_admin_customer_list.csv'; a.click(); URL.revokeObjectURL(a.href);
+      // CSV生成（※カンマを含む値に備えて全列クォート、改行はLF、UTF-8 BOM付き）
+const csv = Papa.unparse(
+  { fields: sampleHeaders, data: out.map(r => sampleHeaders.map(h => r[h] ?? '')) },
+  { quotes: true, newline: "\n" }
+);
+const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+const blob = new Blob([BOM, csv], { type: "text/csv" });
+const a = document.createElement("a");
+a.href = URL.createObjectURL(blob);
+a.download = "converted_admin_customer_list.csv";
+a.click();
+URL.revokeObjectURL(a.href);
     });
 
     fetchLocalSampleFallback();
