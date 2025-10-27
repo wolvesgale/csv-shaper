@@ -178,31 +178,59 @@
       return { last: s.slice(0,mid), first: s.slice(mid) };
     }
 
-    function normalizeName(raw){
-      if(raw == null) return { last:'', first:'' };
-      let s = String(raw);
+function normalizeName(raw){
+  if (raw == null) return { last: '', first: '' };
+  let s = String(raw).trim();
 
-      // 英字・ASCII記号を削除（※半角スペースは削除しない）
-      if(stripAscii.checked){
-        s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g,'').trim();
-      }
+  // 判定
+  const hasKanji = /[\u4E00-\u9FFF]/.test(s);
+  const hasLatin = /[A-Za-z]/.test(s);
 
-      // まずスペースでの分割
-      let sp = splitWithSpace(s);
-      if(sp){
-        // 右側のスペースは仕様に合わせて保持
-        if(!keepSpaces.checked) sp.first = sp.first.replace(/\s+/g,' ').trim();
-        return sp;
-      }
-
-      // スペースがない場合、オプションで推定分割
-      if(useHeuristic.checked){
-        return heuristicSplitKanji(s);
-      }
-
-      // どうにもならなければ姓=全体
-      return { last: s, first: '' };
+  // --- 1) 漢字を含むケース（日本語主体） ---
+  if (hasKanji) {
+    // 「漢字＋英字」混在時の英字除去（※半角スペースは残す）
+    if (stripAscii.checked) {
+      s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
     }
+    // まず半角スペース、なければ（オプションONなら）全角スペース
+    let i = s.indexOf(' ');
+    if (i < 0 && useZenkaku && useZenkaku.checked) i = s.indexOf('　');
+
+    if (i >= 0) {
+      const last  = s.slice(0, i).trim();       // 左＝姓
+      let first   = s.slice(i + 1);              // 右＝名（空白は保持仕様）
+      if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
+      return { last, first };
+    }
+    // スペースが無ければヒューリスティクスへ（オプション）
+    if (useHeuristic && useHeuristic.checked) return heuristicSplitKanji(s);
+    return { last: s, first: '' };
+  }
+
+  // --- 2) 英字のみ（ローマ字表記） ---
+  if (hasLatin) {
+    // 余計な空白を一旦整える（名の中の複数空白は1つに）
+    s = s.replace(/\s+/g, ' ').trim();
+    // 「最後のスペース」で分割：右＝姓（last）、左＝名（first）
+    const j = s.lastIndexOf(' ');
+    if (j === -1) return { last: s, first: '' };        // 単語1個なら全部を姓に
+    const first = s.slice(0, j).trim();                  // 例: "Tomokazu"
+    const last  = s.slice(j + 1).trim();                 // 例: "Tamura"
+    return { last, first };
+  }
+
+  // --- 3) それ以外（かな・カナ等）は半角/全角スペースでの基本分割に準拠 ---
+  let k = s.indexOf(' ');
+  if (k < 0 && useZenkaku && useZenkaku.checked) k = s.indexOf('　');
+  if (k >= 0) {
+    const last = s.slice(0, k).trim();
+    let first  = s.slice(k + 1);
+    if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
+    return { last, first };
+  }
+  return { last: s, first: '' };
+}
+
 
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
