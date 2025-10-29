@@ -151,12 +151,30 @@
       previewTable.appendChild(tbody);
     }
 
+    // ===== 出力ファイル名のサフィックス生成 =====
+    function deriveSuffixFromSourceName(filename) {
+      if (!filename) return '';
+      const base = filename.replace(/\.[^.]+$/, '');
+      const withoutJinmyaku = base.replace(/人脈/g, '');
+      const kanjiChars = (withoutJinmyaku.match(/[\u4E00-\u9FFF]/g) || []).join('');
+      if (kanjiChars.length > 0) return sanitizeForFilename(kanjiChars);
+      const tokens = base
+        .split(/[^A-Za-z]+/)
+        .filter(Boolean)
+        .filter(t => !/^(rp|xx)$/i.test(t))
+        .filter(t => !/^\d+$/.test(t));
+      if (tokens.length === 0) return '';
+      return sanitizeForFilename(tokens.join('_'));
+    }
+    function sanitizeForFilename(s) {
+      const cleaned = s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '');
+      return cleaned.slice(0, 80);
+    }
+
     // —— 名前正規化＆分割 —— //
     function splitWithSpace(s){
-      // 半角スペース優先
       let i = s.indexOf(' ');
       if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
-      // オプション：全角スペース
       if(useZenkaku.checked){
         i = s.indexOf('　');
         if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
@@ -165,72 +183,60 @@
     }
 
     function heuristicSplitKanji(s){
-      // 1) 辞書に一致する姓で開始
       for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
       }
-      // 2) 漢字カウントでざっくり
       const kanji = (s.match(/[\u4E00-\u9FFF]/g) || []).length;
       if(kanji >= 4) return { last: s.slice(0,2), first: s.slice(2) };
       if(kanji === 3) return { last: s.slice(0,1), first: s.slice(1) };
-      // 3) 半分割り
       const mid = Math.max(1, Math.floor(s.length/2));
       return { last: s.slice(0,mid), first: s.slice(mid) };
     }
 
-function normalizeName(raw){
-  if (raw == null) return { last: '', first: '' };
-  let s = String(raw).trim();
+    function normalizeName(raw){
+      if (raw == null) return { last: '', first: '' };
+      let s = String(raw).trim();
+      const hasKanji = /[\u4E00-\u9FFF]/.test(s);
+      const hasLatin = /[A-Za-z]/.test(s);
 
-  // 判定
-  const hasKanji = /[\u4E00-\u9FFF]/.test(s);
-  const hasLatin = /[A-Za-z]/.test(s);
+      // 1) 漢字主体
+      if (hasKanji) {
+        if (stripAscii.checked) {
+          s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
+        }
+        let i = s.indexOf(' ');
+        if (i < 0 && useZenkaku && useZenkaku.checked) i = s.indexOf('　');
+        if (i >= 0) {
+          const last  = s.slice(0, i).trim();
+          let first   = s.slice(i + 1);
+          if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
+          return { last, first };
+        }
+        if (useHeuristic && useHeuristic.checked) return heuristicSplitKanji(s);
+        return { last: s, first: '' };
+      }
 
-  // --- 1) 漢字を含むケース（日本語主体） ---
-  if (hasKanji) {
-    // 「漢字＋英字」混在時の英字除去（※半角スペースは残す）
-    if (stripAscii.checked) {
-      s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
+      // 2) 英字のみ（最後のスペースで分割：右=last 左=first）
+      if (hasLatin) {
+        s = s.replace(/\s+/g, ' ').trim();
+        const j = s.lastIndexOf(' ');
+        if (j === -1) return { last: s, first: '' };
+        const first = s.slice(0, j).trim();
+        const last  = s.slice(j + 1).trim();
+        return { last, first };
+      }
+
+      // 3) その他（かな等）
+      let k = s.indexOf(' ');
+      if (k < 0 && useZenkaku && useZenkaku.checked) k = s.indexOf('　');
+      if (k >= 0) {
+        const last = s.slice(0, k).trim();
+        let first  = s.slice(k + 1);
+        if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
+        return { last, first };
+      }
+      return { last: s, first: '' };
     }
-    // まず半角スペース、なければ（オプションONなら）全角スペース
-    let i = s.indexOf(' ');
-    if (i < 0 && useZenkaku && useZenkaku.checked) i = s.indexOf('　');
-
-    if (i >= 0) {
-      const last  = s.slice(0, i).trim();       // 左＝姓
-      let first   = s.slice(i + 1);              // 右＝名（空白は保持仕様）
-      if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
-      return { last, first };
-    }
-    // スペースが無ければヒューリスティクスへ（オプション）
-    if (useHeuristic && useHeuristic.checked) return heuristicSplitKanji(s);
-    return { last: s, first: '' };
-  }
-
-  // --- 2) 英字のみ（ローマ字表記） ---
-  if (hasLatin) {
-    // 余計な空白を一旦整える（名の中の複数空白は1つに）
-    s = s.replace(/\s+/g, ' ').trim();
-    // 「最後のスペース」で分割：右＝姓（last）、左＝名（first）
-    const j = s.lastIndexOf(' ');
-    if (j === -1) return { last: s, first: '' };        // 単語1個なら全部を姓に
-    const first = s.slice(0, j).trim();                  // 例: "Tomokazu"
-    const last  = s.slice(j + 1).trim();                 // 例: "Tamura"
-    return { last, first };
-  }
-
-  // --- 3) それ以外（かな・カナ等）は半角/全角スペースでの基本分割に準拠 ---
-  let k = s.indexOf(' ');
-  if (k < 0 && useZenkaku && useZenkaku.checked) k = s.indexOf('　');
-  if (k >= 0) {
-    const last = s.slice(0, k).trim();
-    let first  = s.slice(k + 1);
-    if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
-    return { last, first };
-  }
-  return { last: s, first: '' };
-}
-
 
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
@@ -311,49 +317,48 @@ function normalizeName(raw){
           if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
-// 2) フルネーム→姓/名 + 追加要件対応
-let skipThisRowDueToEmptyName = false;
+        // 2) フルネーム→姓/名 + 追加要件対応
+        let skipThisRowDueToEmptyName = false;
+        if (fullNameKey && (wantLast || wantFirst)) {
+          const nm = normalizeName(row[fullNameKey]);
+          let lastVal  = (nm.last  ?? '').trim();
+          let firstVal = (nm.first ?? '').trim();
 
-if (fullNameKey && (wantLast || wantFirst)) {
-  const nm = normalizeName(row[fullNameKey]);
-  let lastVal  = (nm.last  ?? '').trim();
-  let firstVal = (nm.first ?? '').trim();
-
-  // (1) 姓名ともに空欄なら、この行をスキップ
-  if (!lastVal && !firstVal) {
-    skipThisRowDueToEmptyName = true;
-  } else {
-    // (2) 切りようがなく姓だけになった（名が空）→ 名に「※」を入れる
-    if (lastVal && !firstVal) firstVal = '※';
-
-    if (lastKey)  outRow[lastKey]  = lastVal;
-    if (firstKey) outRow[firstKey] = firstVal;
-  }
-}
-
-// ここでスキップ判定
-if (skipThisRowDueToEmptyName) {
-  continue; // ← この行だけ出力しない
-}
-
+          // (1) 姓名ともに空欄ならスキップ
+          if (!lastVal && !firstVal) {
+            skipThisRowDueToEmptyName = true;
+          } else {
+            // (2) 姓だけで名が空 → 名に「※」
+            if (lastVal && !firstVal) firstVal = '※';
+            if (lastKey)  outRow[lastKey]  = lastVal;
+            if (firstKey) outRow[firstKey] = firstVal;
+          }
+        }
+        if (skipThisRowDueToEmptyName) continue;
 
         // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
       }
 
-      // CSV生成（※カンマを含む値に備えて全列クォート、改行はLF、UTF-8 BOM付き）
-const csv = Papa.unparse(
-  { fields: sampleHeaders, data: out.map(r => sampleHeaders.map(h => r[h] ?? '')) },
-  { quotes: true, newline: "\n" }
-);
-const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
-const blob = new Blob([BOM, csv], { type: "text/csv" });
-const a = document.createElement("a");
-a.href = URL.createObjectURL(blob);
-a.download = "converted_admin_customer_list.csv";
-a.click();
-URL.revokeObjectURL(a.href);
+      // CSV生成（全列クォート、LF、UTF-8 BOM）
+      const csv = Papa.unparse(
+        { fields: sampleHeaders, data: out.map(r => sampleHeaders.map(h => r[h] ?? '')) },
+        { quotes: true, newline: "\n" }
+      );
+      const BOM = new Uint8Array([0xEF, 0xBB, 0xBF]);
+      const blob = new Blob([BOM, csv], { type: "text/csv" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+
+      // 出力ファイル名：由来サフィックス付与
+      const srcName = (sourceInput.files && sourceInput.files[0] && sourceInput.files[0].name) || '';
+      const suffix  = deriveSuffixFromSourceName(srcName);
+      const base    = 'converted_admin_customer_list';
+      a.download    = `${base}${suffix ? '_' + suffix : ''}.csv`;
+
+      a.click();
+      URL.revokeObjectURL(a.href);
     });
 
     fetchLocalSampleFallback();
