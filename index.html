@@ -311,12 +311,31 @@ function normalizeName(raw){
           if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
-        // 2) フルネーム→姓/名
-        if(fullNameKey && (wantLast || wantFirst)){
-          const nm = normalizeName(row[fullNameKey]);
-          if(lastKey)  outRow[lastKey]  = nm.last  || '';
-          if(firstKey) outRow[firstKey] = nm.first || '';
-        }
+// 2) フルネーム→姓/名 + 追加要件対応
+let skipThisRowDueToEmptyName = false;
+
+if (fullNameKey && (wantLast || wantFirst)) {
+  const nm = normalizeName(row[fullNameKey]);
+  let lastVal  = (nm.last  ?? '').trim();
+  let firstVal = (nm.first ?? '').trim();
+
+  // (1) 姓名ともに空欄なら、この行をスキップ
+  if (!lastVal && !firstVal) {
+    skipThisRowDueToEmptyName = true;
+  } else {
+    // (2) 切りようがなく姓だけになった（名が空）→ 名に「※」を入れる
+    if (lastVal && !firstVal) firstVal = '※';
+
+    if (lastKey)  outRow[lastKey]  = lastVal;
+    if (firstKey) outRow[firstKey] = firstVal;
+  }
+}
+
+// ここでスキップ判定
+if (skipThisRowDueToEmptyName) {
+  continue; // ← この行だけ出力しない
+}
+
 
         // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
