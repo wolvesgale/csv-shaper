@@ -249,12 +249,40 @@
       }
     }
 
+    // ==== ヘッダー無しCSVに自動対応する parseFile（重要） ====
     async function parseFile(file,onDone){
       return new Promise(resolve=>{
         Papa.parse(file,{
           header:true,
           skipEmptyLines:'greedy',
-          complete:(res)=>{ onDone(res.data||[],res.meta||{}); resolve(); },
+          complete:(res)=>{
+            let data = res.data || [];
+            let meta = res.meta || {};
+
+            // ヘッダーが無効（空/未定義/空文字だらけ）の場合、col1..colN を仮付与
+            const invalidHeader =
+              !meta.fields ||
+              meta.fields.length === 0 ||
+              meta.fields.every(h => h == null || String(h).trim() === '');
+
+            if (invalidHeader && data.length) {
+              const first = data[0];
+              const colCount = Object.keys(first).length;
+              const newFields = Array.from({length: colCount}, (_,i)=>`col${i+1}`);
+              const newData = [];
+              for (const row of data) {
+                const vals = Object.values(row);
+                const obj = {};
+                newFields.forEach((f,idx)=> obj[f] = vals[idx] ?? '');
+                newData.push(obj);
+              }
+              meta.fields = newFields;
+              data = newData;
+            }
+
+            onDone(data, meta);
+            resolve();
+          },
           error:()=>{ onDone([],{}); resolve(); }
         });
       });
@@ -274,26 +302,22 @@
       }
     }
 
-    // ここを「最左列＝氏名」フォールバック対応に差し替え
+    // ヘッダー無しでも「最左列=氏名」をフォールバック
     sourceInput.addEventListener('change', async () => {
       const f = sourceInput.files && sourceInput.files[0];
       if (!f) return;
 
-      await parseFile(f, (rows) => {
+      await parseFile(f, (rows, meta) => {
         sourceRows = rows;
         renderPreview();
 
-        const headers = Object.keys(rows[0] || {});
-
-        // セレクトを再構築
+        const headers = (meta && meta.fields) ? meta.fields : Object.keys(rows[0] || {});
         fullNameColSelect.innerHTML =
           '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
-          headers.map((h) => `<option>${h}</option>`).join('');
+          headers.map(h => `<option>${h}</option>`).join('');
 
-        // まず通常の自動検出
         let detected = tryAutoFullNameCol(headers);
-        // 自動検出に失敗 ⇒ 左端（最初の）列名を氏名列として採用
-        if (!detected && headers.length > 0) detected = headers[0];
+        if (!detected && headers.length > 0) detected = headers[0]; // 最左列フォールバック
 
         fullNameColSelect.value = detected || '';
         setButtonState();
