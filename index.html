@@ -108,14 +108,23 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 入力（日本語）→出力（英語）マッピング
+    // 入力（日本語）→出力（英語）マッピング（追加表記をカバー）
     const headerMap = {
       '会社名': 'company_name',
+      '社名': 'company_name',
+      '企業名': 'company_name',
+      '法人名': 'company_name',
+      '勤務先': 'company_name',
+      '勤務先名': 'company_name',
+
       '会社番号': 'company_number',
       '部署': 'department',
+      '部門': 'department',
       '役職': 'position',
+      '役割': 'position',
       'URL': 'contact_url',
       '備考': 'notes',
+      'メモ': 'notes',
       'サポーターID': 'supporter_id',
       'supporterId': 'supporter_id'
     };
@@ -172,16 +181,6 @@
     }
 
     // —— 名前正規化＆分割 —— //
-    function splitWithSpace(s){
-      let i = s.indexOf(' ');
-      if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
-      if(useZenkaku.checked){
-        i = s.indexOf('　');
-        if(i >= 0) return { last: s.slice(0,i).trim(), first: s.slice(i+1) };
-      }
-      return null;
-    }
-
     function heuristicSplitKanji(s){
       for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
@@ -275,6 +274,32 @@
       }
     }
 
+    // ここを「最左列＝氏名」フォールバック対応に差し替え
+    sourceInput.addEventListener('change', async () => {
+      const f = sourceInput.files && sourceInput.files[0];
+      if (!f) return;
+
+      await parseFile(f, (rows) => {
+        sourceRows = rows;
+        renderPreview();
+
+        const headers = Object.keys(rows[0] || {});
+
+        // セレクトを再構築
+        fullNameColSelect.innerHTML =
+          '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
+          headers.map((h) => `<option>${h}</option>`).join('');
+
+        // まず通常の自動検出
+        let detected = tryAutoFullNameCol(headers);
+        // 自動検出に失敗 ⇒ 左端（最初の）列名を氏名列として採用
+        if (!detected && headers.length > 0) detected = headers[0];
+
+        fullNameColSelect.value = detected || '';
+        setButtonState();
+      });
+    });
+
     sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
       if(!f) return;
@@ -283,35 +308,6 @@
         complete:(res)=>{ adoptHeadersFromSample(res.meta||{}); setButtonState(); }
       });
     });
-
-sourceInput.addEventListener('change', async () => {
-  const f = sourceInput.files && sourceInput.files[0];
-  if (!f) return;
-
-  await parseFile(f, (rows) => {
-    sourceRows = rows;
-    renderPreview();
-
-    const headers = Object.keys(rows[0] || {});
-
-    // セレクトを再構築
-    fullNameColSelect.innerHTML =
-      '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
-      headers.map((h) => `<option>${h}</option>`).join('');
-
-    // まず通常の自動検出
-    let detected = tryAutoFullNameCol(headers);
-
-    // 自動検出に失敗 ⇒ 左端（最初の）列名を氏名列として採用
-    if (!detected && headers.length > 0) {
-      detected = headers[0];
-    }
-
-    fullNameColSelect.value = detected || '';
-    setButtonState();
-  });
-});
-
 
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
@@ -333,7 +329,7 @@ sourceInput.addEventListener('change', async () => {
           if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
-        // 2) フルネーム→姓/名 + 追加要件対応
+        // 2) フルネーム→姓/名 + 追加要件
         let skipThisRowDueToEmptyName = false;
         if (fullNameKey && (wantLast || wantFirst)) {
           const nm = normalizeName(row[fullNameKey]);
@@ -352,6 +348,18 @@ sourceInput.addEventListener('change', async () => {
         }
         if (skipThisRowDueToEmptyName) continue;
 
+        // 2.8) 会社名フォールバック：company_name が未設定なら「入力CSVの3列目」を採用（氏名列は除外）
+        if (sampleHeaders.includes('company_name') && !outRow['company_name']) {
+          const rowHeaders = Object.keys(row || {});
+          const thirdKey = rowHeaders[2]; // 0-based: 2 = 3列目
+          if (thirdKey && thirdKey !== fullNameKey) {
+            const thirdVal = row[thirdKey];
+            if (thirdVal != null && String(thirdVal).trim() !== '') {
+              outRow['company_name'] = thirdVal;
+            }
+          }
+        }
+
         // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
@@ -367,7 +375,7 @@ sourceInput.addEventListener('change', async () => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
 
-      // 出力ファイル名：由来サフィックス付与
+      // 出力ファイル名：由来サフィックス付与（漢字は“人脈”除外、英字は RP/XX/数字は除外）
       const srcName = (sourceInput.files && sourceInput.files[0] && sourceInput.files[0].name) || '';
       const suffix  = deriveSuffixFromSourceName(srcName);
       const base    = 'converted_admin_customer_list';
