@@ -284,18 +284,34 @@
       });
     });
 
-    sourceInput.addEventListener('change', async()=>{
-      const f = sourceInput.files && sourceInput.files[0];
-      if(!f) return;
-      await parseFile(f,(rows)=>{
-        sourceRows = rows;
-        renderPreview();
-        const headers = Object.keys(rows[0] || {});
-        fullNameColSelect.innerHTML = '<option value=\"\">自動検出（氏名/姓名/名前/Name）</option>' + headers.map(h=>`<option>${h}</option>`).join('');
-        fullNameColSelect.value = tryAutoFullNameCol(headers);
-        setButtonState();
-      });
-    });
+sourceInput.addEventListener('change', async () => {
+  const f = sourceInput.files && sourceInput.files[0];
+  if (!f) return;
+
+  await parseFile(f, (rows) => {
+    sourceRows = rows;
+    renderPreview();
+
+    const headers = Object.keys(rows[0] || {});
+
+    // セレクトを再構築
+    fullNameColSelect.innerHTML =
+      '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
+      headers.map((h) => `<option>${h}</option>`).join('');
+
+    // まず通常の自動検出
+    let detected = tryAutoFullNameCol(headers);
+
+    // 自動検出に失敗 ⇒ 左端（最初の）列名を氏名列として採用
+    if (!detected && headers.length > 0) {
+      detected = headers[0];
+    }
+
+    fullNameColSelect.value = detected || '';
+    setButtonState();
+  });
+});
+
 
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
