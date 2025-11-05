@@ -86,6 +86,7 @@
         <li>漢字＋英字混在は英字のみ除去してから分割（スペースは維持）。</li>
         <li>サンプル取得失敗時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>ヘッダ無しCSVにも対応：左端（<code>__col0</code>）を氏名、3列目（<code>__col2</code>）を会社名フォールバック。</li>
+        <li>名前欄が【未入力】なら、姓・名ともに【未入力】として出力。</li>
       </ul>
     </details>
 
@@ -127,14 +128,14 @@
     const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
 
     let sampleHeaders = [];
-    let sourceRows = [];     // 最終的に「オブジェクト配列」（ヘッダ有/無どちらでも整形）
-    let headerless = false;  // ヘッダなし検出フラグ
+    let sourceRows = [];     // 正規化後は常に「オブジェクト配列」
+    let headerless = false;  // ヘッダなし検出
 
     function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
     function tryAutoFullNameCol(headers){
       const keys = ['氏名','姓名','名前','お名前','Name','name','フルネーム'];
-      const hit = headers.find(h => keys.some(k => h.includes(k)));
+      const hit = headers.find(h => keys.some(k => String(h).includes(k)));
       return hit || '';
     }
 
@@ -155,7 +156,7 @@
       previewTable.appendChild(tbody);
     }
 
-    // ===== 出力ファイル名のサフィックス生成 =====
+    // ===== 出力ファイル名サフィックス =====
     function deriveSuffixFromSourceName(filename) {
       if (!filename) return '';
       const base = filename.replace(/\.[^.]+$/, '');
@@ -175,7 +176,7 @@
       return cleaned.slice(0, 80);
     }
 
-    // —— 名前正規化＆分割 —— //
+    // —— 名前判定・分割 —— //
     function heuristicSplitKanji(s){
       for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
@@ -187,13 +188,21 @@
       return { last: s.slice(0,mid), first: s.slice(mid) };
     }
 
+    // 「未入力」表記の判定（【未入力】/未入力/空白含むも許容）
+    function isUnentered(v){
+      if (v == null) return false;
+      let s = String(v).trim();
+      // 角括弧などを除去して比較
+      s = s.replace(/[［\[\]］【】]/g, '').trim();
+      return s === '未入力';
+    }
+
     function normalizeName(raw){
       if (raw == null) return { last: '', first: '' };
       let s = String(raw).trim();
       const hasKanji = /[\u4E00-\u9FFF]/.test(s);
       const hasLatin = /[A-Za-z]/.test(s);
 
-      // 1) 漢字主体
       if (hasKanji) {
         if (stripAscii.checked) {
           s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
@@ -210,7 +219,6 @@
         return { last: s, first: '' };
       }
 
-      // 2) 英字のみ（最後のスペースで分割：右=last 左=first）
       if (hasLatin) {
         s = s.replace(/\s+/g, ' ').trim();
         const j = s.lastIndexOf(' ');
@@ -220,7 +228,6 @@
         return { last, first };
       }
 
-      // 3) その他（かな等）
       let k = s.indexOf(' ');
       if (k < 0 && useZenkaku && useZenkaku.checked) k = s.indexOf('　');
       if (k >= 0) {
@@ -246,7 +253,6 @@
 
     // ---- 汎用パース（header:true/false を自動判定） ----
     async function parseSourceSmart(file){
-      // 1) header:true で試す
       const res1 = await new Promise(resolve=>{
         Papa.parse(file, { header:true, skipEmptyLines:'greedy',
           complete: (res)=> resolve(res), error: ()=> resolve(null)
@@ -257,13 +263,11 @@
         const headers = (res1.meta && res1.meta.fields) ? res1.meta.fields : [];
         const knownKeys = ['氏名','姓名','名前','お名前','Name','name','フルネーム','会社名','勤務先','企業名','社名'];
         const hit = headers.some(h => knownKeys.some(k => String(h||'').includes(k)));
-        // ヘッダらしい名前が一つでもあれば header:true を採用
         if (hit) {
           headerless = false;
           return rows.map(r => ({...r}));
         }
       }
-      // 2) ヘッダなしとして再パース
       const res2 = await new Promise(resolve=>{
         Papa.parse(file, { header:false, skipEmptyLines:'greedy',
           complete: (res)=> resolve(res), error: ()=> resolve(null)
@@ -271,13 +275,11 @@
       });
       headerless = true;
       const arrRows = (res2 && res2.data) ? res2.data : [];
-      // 配列 → 仮ヘッダ付きオブジェクトに変換（__col0, __col1, __col2, ...）
-      const objRows = arrRows.map(cols => {
+      return arrRows.map(cols => {
         const o = {};
         (cols || []).forEach((v, idx) => { o['__col'+idx] = v; });
         return o;
       });
-      return objRows;
     }
 
     async function fetchLocalSampleFallback(){
@@ -311,17 +313,14 @@
       renderPreview();
 
       const headers = Object.keys(sourceRows[0] || {});
-      // 氏名セレクトの再構築
       fullNameColSelect.innerHTML =
         '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
         headers.map(h=>`<option>${h}</option>`).join('');
 
-      // 自動検出（ヘッダなしなら __col0 を優先）
       let detected = tryAutoFullNameCol(headers);
       if (!detected && headerless && headers.includes('__col0')) detected = '__col0';
       fullNameColSelect.value = detected || '';
 
-      // 状態表示
       sourceHint.textContent = headerless
         ? '検出: ヘッダなしCSV（左端=__col0を氏名、3列目=__col2を会社名フォールバック）'
         : '検出: ヘッダありCSV';
@@ -349,21 +348,30 @@
           if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
-        // 2) フルネーム→姓/名 + 追加要件
+        // 2) フルネーム処理（最優先で「未入力」をチェック）
         let skipThisRowDueToEmptyName = false;
         if (fullNameKey && (wantLast || wantFirst)) {
-          const nm = normalizeName(row[fullNameKey]);
-          let lastVal  = (nm.last  ?? '').trim();
-          let firstVal = (nm.first ?? '').trim();
+          const rawFullName = row[fullNameKey];
 
-          // (1) 姓名ともに空欄ならスキップ
-          if (!lastVal && !firstVal) {
-            skipThisRowDueToEmptyName = true;
+          if (isUnentered(rawFullName)) {
+            // 【未入力】強制反映
+            if (lastKey)  outRow[lastKey]  = '【未入力】';
+            if (firstKey) outRow[firstKey] = '【未入力】';
           } else {
-            // (2) 姓だけで名が空 → 名に「※」
-            if (lastVal && !firstVal) firstVal = '※';
-            if (lastKey)  outRow[lastKey]  = lastVal;
-            if (firstKey) outRow[firstKey] = firstVal;
+            // 通常の分割
+            const nm = normalizeName(rawFullName);
+            let lastVal  = (nm.last  ?? '').trim();
+            let firstVal = (nm.first ?? '').trim();
+
+            if (!lastVal && !firstVal) {
+              // 両方空なら行スキップ（既存仕様維持）
+              skipThisRowDueToEmptyName = true;
+            } else {
+              // 姓だけ判定 → 名に※
+              if (lastVal && !firstVal) firstVal = '※';
+              if (lastKey)  outRow[lastKey]  = lastVal;
+              if (firstKey) outRow[firstKey] = firstVal;
+            }
           }
         }
         if (skipThisRowDueToEmptyName) continue;
@@ -371,12 +379,10 @@
         // 2.8) 会社名フォールバック
         if (sampleHeaders.includes('company_name') && !outRow['company_name']) {
           const rowHeaders = Object.keys(row || {});
-          // ヘッダ無しの場合は __col2（3列目）を試す
           if (headerless && rowHeaders.includes('__col2')) {
             const v = row['__col2'];
             if (v != null && String(v).trim() !== '') outRow['company_name'] = v;
           } else {
-            // ヘッダあり：氏名列を除いた3列目を試す
             const thirdKey = rowHeaders[2];
             if (thirdKey && thirdKey !== fullNameKey) {
               const v = row[thirdKey];
