@@ -85,7 +85,7 @@
         <li>氏名は<strong>最初の半角スペース</strong>で分割（オプションで全角も）。</li>
         <li>漢字＋英字混在は英字のみ除去してから分割（スペースは維持）。</li>
         <li>ヘッダ無しCSVにも対応：左端（<code>__col0</code>）を氏名、3列目（<code>__col2</code>）を会社名フォールバック。</li>
-        <li>名前が <code>FALSE/false/N/A/-/空</code> や <code>【未入力】</code> 相当なら、姓・名ともに<strong>【未入力】</strong>。</li>
+        <li>名前が <code>FALSE/false/N/A/-/空/【未入力】</code> 相当なら、姓・名ともに<strong>【未入力】</strong>。</li>
         <li>出力が 2,500 行を超える場合は 2,500 行ごとに自動分割して複数CSVを連続ダウンロード。</li>
       </ul>
     </details>
@@ -112,22 +112,17 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 入力（日本語）→出力（英語）マッピング（「マッチングリスト」系も網羅）
+    // 既知の和名/英名 → 出力列
     const headerMap = {
       // 会社名
       '会社名': 'company_name', '社名': 'company_name', '企業名': 'company_name', '法人名': 'company_name',
-      '勤務先': 'company_name', '勤務先名': 'company_name',
+      '勤務先': 'company_name', '勤務先名': 'company_name', 'company': 'company_name', 'companyname': 'company_name',
       // 部署
       '部署': 'department', '部門': 'department', '部署名': 'department', '所属': 'department',
+      'department': 'department', 'dept': 'department', 'division': 'department', 'section': 'department',
       // 役職
       '役職': 'position', '役割': 'position', '役職名': 'position', '肩書': 'position', 'ポジション': 'position',
-      // その他
-      '会社番号': 'company_number',
-      'URL': 'contact_url',
-      '備考': 'notes', 'メモ': 'notes',
-      'サポーターID': 'supporter_id', 'supporterId': 'supporter_id',
-      // 氏名ベース（ヘッダありの場合のヒント用）
-      '氏名': '__FULLNAME__', '姓名': '__FULLNAME__', '名前': '__FULLNAME__', 'お名前': '__FULLNAME__', 'Name': '__FULLNAME__', 'name': '__FULLNAME__', 'フルネーム': '__FULLNAME__'
+      'position': 'position', 'title': 'position', 'role': 'position'
     };
 
     // よくある姓（抜粋）
@@ -200,7 +195,6 @@
       const s = String(v).trim();
       if (s === '') return true;
       if (/^(false|null|undefined|-|n\/a)$/i.test(s)) return true;
-      // 角括弧などを除去して比較（【未入力】/［未入力］/未入力）
       const bare = s.replace(/[［\[\]］【】]/g, '').trim();
       return bare === '未入力';
     }
@@ -222,13 +216,13 @@
           return { last, first };
         }
         if (useHeuristic && useHeuristic.checked) return heuristicSplitKanji(s);
-        return { last: s, first: '※' }; // スペース無しで漢字のみ→名は※
+        return { last: s, first: '※' };
       }
 
       if (hasLatin) {
         s = s.replace(/\s+/g, ' ').trim();
         const j = s.lastIndexOf(' ');
-        if (j === -1) return { last: s, first: '※' }; // 単語1個→名は※
+        if (j === -1) return { last: s, first: '※' };
         const first = s.slice(0, j).trim();
         const last  = s.slice(j + 1).trim();
         return { last, first };
@@ -243,6 +237,30 @@
         return { last, first };
       }
       return { last: s, first: '※' };
+    }
+
+    // ===== ヘッダー正規化＆あいまい分類 =====
+    function normalizeHeaderKey(k){
+      if (!k) return '';
+      let s = String(k).toLowerCase();
+      // 括弧ごと注記を削除（全角/半角）
+      s = s.replace(/[（(][^）)]*[）)]/g, '');
+      // 記号・空白除去（英数字・日本語だけ残す）
+      s = s.replace(/[\s_\-–—:：|／/\\]+/g, '');
+      // 全角英数→半角
+      s = s.replace(/[Ａ-Ｚａ-ｚ０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+      return s;
+    }
+    function classifyHeader(norm){
+      // 会社
+      if (/(会社|社名|企業|法人|勤務先|company|companyname)/.test(norm)) return 'company_name';
+      // 部署
+      if (/(部署|部門|所属|部署名|department|dept|division|section)/.test(norm)) return 'department';
+      // 役職
+      if (/(役職|役割|役職名|肩書|ポジション|position|title|role)/.test(norm)) return 'position';
+      // 氏名（ヒント用）
+      if (/(氏名|姓名|名前|お名前|fullname|フルネーム|name)/.test(norm)) return '__FULLNAME__';
+      return null;
     }
 
     function adoptHeadersFromSample(meta){
@@ -267,12 +285,10 @@
       if(res1 && res1.data){
         const rows = res1.data || [];
         const headers = (res1.meta && res1.meta.fields) ? res1.meta.fields : [];
-        // ヘッダありと判断できるか（よくあるキー or 典型的な和名カラム）
-        const knownKeys = Object.keys(headerMap);
-        const hit = headers.some(h => knownKeys.some(k => String(h||'').includes(k)));
-        if (hit) {
-          headerless = false;
-          return rows.map(r => ({...r}));
+        if (headers.length){
+          const norms = headers.map(normalizeHeaderKey);
+          const hintHit = norms.some(n => classifyHeader(n));
+          if (hintHit) { headerless = false; return rows.map(r => ({...r})); }
         }
       }
       // ヘッダ無しとして再パース
@@ -358,7 +374,6 @@
         return;
       }
 
-      // 複数分割
       const parts = Math.ceil(total / chunkSize);
       for (let p = 0; p < parts; p++){
         const from = p * chunkSize;
@@ -385,34 +400,48 @@
       const lastKey   = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
       const firstKey  = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
 
+      // 事前にヘッダー→分類のマップを用意（ヘッダあり時のみ）
+      let classifyMap = {};
+      const sampleRow = sourceRows[0] || {};
+      const srcKeys = Object.keys(sampleRow);
+      if (!headerless) {
+        srcKeys.forEach(k => {
+          const cls = classifyHeader(normalizeHeaderKey(k));
+          if (cls) classifyMap[k] = cls;
+        });
+      }
+
       const out = [];
       for(const row of sourceRows){
         const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
         // 1) 同名ヘッダはコピー
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
-        // 1.5) 日本語→英語のヘッダマッピング（会社名・部署・役職を確実に）
-        for(const [jp,en] of Object.entries(headerMap)){
-          if(en !== '__FULLNAME__' && sampleHeaders.includes(en) && (jp in row) && String(row[jp]).trim() !== ''){
-            outRow[en] = row[jp];
+
+        // 1.5) あいまい一致で company_name / department / position を補完
+        if (!headerless) {
+          for (const [k, v] of Object.entries(row)) {
+            if (v == null || String(v).trim() === '') continue;
+            const cls = classifyMap[k] || classifyHeader(normalizeHeaderKey(k));
+            if (!cls) continue;
+            if (cls === 'company_name' && sampleHeaders.includes('company_name') && !outRow['company_name']) outRow['company_name'] = v;
+            if (cls === 'department'   && sampleHeaders.includes('department')   && !outRow['department'])   outRow['department']   = v;
+            if (cls === 'position'     && sampleHeaders.includes('position')     && !outRow['position'])     outRow['position']     = v;
+            // 氏名はここでは設定しない（既存ロジックでフルネーム扱い）
           }
         }
 
-        // 2) フルネーム（空/無効なら【未入力】に統一）
+        // 2) フルネーム
         if (fullNameKey && (wantLast || wantFirst)) {
-          const rawFullName = row[fullNameKey];
-          const nm = normalizeName(rawFullName);
+          const nm = normalizeName(row[fullNameKey]);
           let lastVal  = (nm.last  ?? '').trim();
           let firstVal = (nm.first ?? '').trim();
-
-          // 「姓だけ」かつ名が※でなく空になってしまったケースは念のため補正
           if (lastVal && !firstVal) firstVal = '※';
-
           if (lastKey)  outRow[lastKey]  = lastVal || '【未入力】';
           if (firstKey) outRow[firstKey] = firstVal || '【未入力】';
         }
 
-        // 2.8) 会社名フォールバック（company_nameが未設定なら3列目を採用）
+        // 2.8) ヘッダなしの会社名フォールバック（3列目）
         if (sampleHeaders.includes('company_name') && !outRow['company_name']) {
           const rowHeaders = Object.keys(row || {});
           if (headerless && rowHeaders.includes('__col2')) {
@@ -427,7 +456,7 @@
           }
         }
 
-        // 3) 1つでも値があれば採用（姓名が【未入力】でも採用）
+        // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
       }
