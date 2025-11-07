@@ -81,11 +81,10 @@
       <summary>仕様（クリックで展開）</summary>
       <ul>
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
-        <li>氏名は<strong>最初の半角 or 全角スペース</strong>で分割（名側の空白保持オプションあり）。</li>
-        <li>漢字＋英字混在は、英字のみ除去してから分割（スペースは維持）。</li>
-        <li>サンプルCSV取得失敗時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
-        <li>名前が「未入力」のときは姓・名ともに「未入力」。両方空は行スキップ。姓のみで名が空は名に「※」。</li>
-        <li>2,500件を超える場合は 2,500件ずつ分割して複数CSVを生成。</li>
+        <li>氏名は<strong>最初の半角/全角スペース</strong>で分割（名が空→「※」／両方空→スキップ）。</li>
+        <li>氏名が「未入力」を含む場合は姓・名ともに<strong>未入力</strong>（スキップしない）。</li>
+        <li>会社名はヘッダーあり＝マッピング優先／ヘッダーなし＝3列目フォールバック（セル全体を採用）。</li>
+        <li>2,500件超は分割出力。</li>
       </ul>
     </details>
 
@@ -110,27 +109,22 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 入力（日本語）→出力（英語）マッピング（表記ゆれ広め）
     const headerMap = {
-      '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name','会社/勤務先':'company_name',
+      '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
-      '部署':'department','部門':'department','所属':'department','所属部署':'department','配属':'department','組織':'department',
-      '役職':'position','役割':'position','肩書':'position','ポジション':'position','職位':'position',
-      'URL':'contact_url','リンク':'contact_url','Web':'contact_url','サイト':'contact_url',
-      '備考':'notes','メモ':'notes','コメント':'notes',
+      '部署':'department','部門':'department','所属':'department','所属部署':'department',
+      '役職':'position','役割':'position','肩書':'position',
+      'URL':'contact_url','リンク':'contact_url','Web':'contact_url',
+      '備考':'notes','メモ':'notes',
       'サポーターID':'supporter_id','supporterId':'supporter_id'
     };
 
     // よくある姓（抜粋）
     const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
 
-    // 会社語：会社名の検出に使う
-    const COMPANY_PAT = /(株式会社|有限会社|合同会社|Inc\.?|LLC|Co\.?,?\s*Ltd\.?|Corporation|Corp\.?|Limited|大学|病院|クリニック|医院|薬局|商事|工業|製作所|ホールディングス|HD|店|センター|研究所)/i;
-
     let sampleHeaders = [];
     let sourceRows = [];
-    let headerless = false;     // ヘッダー無しCSV判定
-    let classifyMap = {};       // 見出し→カテゴリのキャッシュ（ヘッダーあり時）
+    let headerless = false;
 
     function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
@@ -157,7 +151,7 @@
       previewTable.appendChild(tbody);
     }
 
-    // ===== ファイル名サフィックス =====
+    // サフィックス（人脈除外、英字はRP/XX/数字除外）
     function deriveSuffixFromSourceName(filename) {
       if (!filename) return '';
       const base = filename.replace(/\.[^.]+$/, '');
@@ -170,36 +164,7 @@
     }
     function sanitizeForFilename(s){ return s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '').slice(0,80); }
 
-    // ===== ブランク相当判定 =====
-    function isBlankish(v){
-      if (v == null) return true;
-      const s = String(v).replace(/\s+/g,'').replace(/[‐-–—\-―ー−]+/g,'').trim();
-      if (!s) return true;
-      return /^(N\/A|NA|null|なし|未設定|空|blank|なしです)$/i.test(s);
-    }
-
-    // ===== 見出しの正規化と分類 =====
-    function normalizeHeaderKey(k){
-      if (!k) return '';
-      return String(k).trim().replace(/\s+/g,' ').replace(/[()（）【】\[\]<>＜＞]/g,'').toLowerCase();
-    }
-    function classifyHeader(k){
-      const raw = String(k || '');
-      const normalized = normalizeHeaderKey(raw);
-      // 明示マップ優先
-      for (const [jp,en] of Object.entries(headerMap)){
-        if (raw.includes(jp)) return en;
-      }
-      // パターン
-      if (/(company|社名|勤務先|勤務先名|法人名|企業名)/i.test(raw)) return 'company_name';
-      if (/(部署|部門|所属|配属|組織)/i.test(raw)) return 'department';
-      if (/(役職|肩書|職位|役割|position|manager)/i.test(raw)) return 'position';
-      if (/(url|link|site|web)/i.test(raw)) return 'contact_url';
-      if (/(備考|メモ|コメント|note)/i.test(raw)) return 'notes';
-      return null;
-    }
-
-    // ===== 名前分割 =====
+    // —— 名前分割 —— //
     function heuristicSplitKanji(s){
       for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
@@ -211,10 +176,18 @@
       return { last: s.slice(0,mid), first: s.slice(mid) };
     }
 
+    // 「未入力」判定（かっこ・全角半角含む）
+    function isMiNyuuryoku(s){
+      if (!s) return false;
+      return /未\s*入\s*力/.test(String(s));
+    }
+
     function normalizeName(raw){
       if (raw == null) return { last: '', first: '' };
       let s = String(raw).trim();
-      if (s === '未入力') return { last: '未入力', first: '未入力' };
+
+      // ★ 最優先：未入力
+      if (isMiNyuuryoku(s)) return { last: '未入力', first: '未入力' };
 
       const hasKanji = /[\u4E00-\u9FFF]/.test(s);
       const hasLatin = /[A-Za-z]/.test(s);
@@ -253,43 +226,6 @@
       return { last: s, first: '' };
     }
 
-    // ===== 会社名抽出・列推定 =====
-    function extractCompanyLike(value){
-      if (!value) return '';
-      const s = String(value).trim().replace(/\s+/g,' ');
-      const m = s.match(COMPANY_PAT);
-      if (m) {
-        const end = m.index + m[0].length;
-        return s.slice(0, end).trim();
-      }
-      return s; // 会社語が無い場合はそのまま返す（空判定は別関数）
-    }
-
-    function detectCompanyColumn(rows, fullNameKey, maxScan = 6){
-      if (!rows.length) return null;
-      const keys = Object.keys(rows[0] || {});
-      const scanKeys = keys.filter(k => k !== fullNameKey).slice(0, maxScan);
-
-      let bestKey = null, bestScore = 0;
-      for (const k of scanKeys){
-        let score = 0, nonEmpty = 0;
-        for (let i=0; i<Math.min(rows.length, 500); i++){
-          const v = rows[i][k];
-          if (v == null) continue;
-          const s = String(v).trim();
-          if (!s) continue;
-          nonEmpty++;
-          if (COMPANY_PAT.test(s)) score++;
-        }
-        if (score > bestScore && nonEmpty > 0){
-          bestScore = score;
-          bestKey = k;
-        }
-      }
-      return bestKey;
-    }
-
-    // ===== サンプル列採用 =====
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
         sampleHeaders = meta.fields;
@@ -302,31 +238,23 @@
       }
     }
 
-    // ===== 解析（ヘッダーあり/なし自動判定） =====
+    // 解析：まず header:true を試し、ダメなら header:false に切替
     async function parseSmart(file){
-      // 1st: ヘッダーありで読む
       const res1 = await new Promise(resolve=>{
         Papa.parse(file,{ header:true, skipEmptyLines:'greedy',
           complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
       });
       const headers1 = (res1.meta && res1.meta.fields) || [];
       const row0 = (res1.data && res1.data[0]) || null;
-
       const looksHeaderless = !headers1.length
         || (row0 && Object.keys(row0).length && Object.values(row0).every(v => v == null || v === ''))
         || headers1.some(h => /^column\d+$/i.test(h));
+      if (!looksHeaderless) { headerless = false; return res1; }
 
-      if (!looksHeaderless) {
-        headerless = false;
-        return res1;
-      }
-
-      // 2nd: ヘッダーなしで読む
       const res2 = await new Promise(resolve=>{
         Papa.parse(file,{ header:false, skipEmptyLines:'greedy',
           complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
       });
-      // res2.data は配列の配列。→ __col0, __col1… に変換
       const norm = (res2.data || []).map(arr=>{
         const o = {};
         (arr || []).forEach((v,i)=>{ o[`__col${i}`] = v; });
@@ -355,7 +283,7 @@
       }
     }
 
-    // ===== イベント：サンプルCSV =====
+    // イベント：サンプルCSV
     sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
       if(!f) return;
@@ -364,38 +292,28 @@
       });
     });
 
-    // ===== イベント：元CSV（ヘッダー無しにも対応） =====
+    // イベント：元CSV（氏名列はヘッダーあり=キーワード、無し=最左列）
     sourceInput.addEventListener('change', async () => {
       const f = sourceInput.files && sourceInput.files[0];
       if (!f) return;
 
-      await parseFile(f, (rows, meta) => {
+      await parseFile(f, (rows) => {
         sourceRows = rows;
         renderPreview();
 
         const headers = Object.keys(rows[0] || {});
-        // ヘッダーありの場合は見出し→カテゴリの簡易キャッシュ
-        classifyMap = {};
-        if (!headerless){
-          headers.forEach(h => {
-            const cls = classifyHeader(h);
-            if (cls) classifyMap[h] = cls;
-          });
-        }
-
-        // フルネーム列プルダウン
         fullNameColSelect.innerHTML =
           '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
           headers.map((h) => `<option>${h}</option>`).join('');
 
         let detected = tryAutoFullNameCol(headers);
-        if (!detected && headers.length > 0) detected = headers[0]; // ヘッダー無し：最左列を氏名列とみなす
+        if (!detected && headers.length > 0) detected = headers[0]; // ヘッダー無しは最左列
         fullNameColSelect.value = detected || '';
         setButtonState();
       });
     });
 
-    // ===== 変換（2,500件スプリットに対応） =====
+    // 変換（安定仕様）
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
       const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
@@ -405,86 +323,52 @@
       const lastKey   = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
       const firstKey  = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
 
-      // 会社名列の推定（ヘッダー無し or 不確実時用）
-      const guessedCompanyKey = detectCompanyColumn(sourceRows, fullNameKey, 6);
-
       const out = [];
       for(const row of sourceRows){
         const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
-        // 1) 同名ヘッダはコピー
-        if (!headerless) {
-          for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
-          // 1.5) 日本語→英語のヘッダマッピング
-          for(const [jp,en] of Object.entries(headerMap)){
-            if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
-          }
-          // 1.6) 見出しの分類で拾えるものも反映
-          for (const [k,v] of Object.entries(row)){
-            const cls = classifyMap[k] || classifyHeader(k);
-            if (cls && sampleHeaders.includes(cls) && isBlankish(outRow[cls])) {
-              outRow[cls] = v;
-            }
-          }
+        // 1) ヘッダー一致コピー＆日本語→英語
+        for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
+        for(const [jp,en] of Object.entries(headerMap)){
+          if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
         }
 
-        // 2) 氏名 → 姓/名（未入力／名が空→※／両空→スキップ）
-        let skipThisRowDueToEmptyName = false;
+        // 2) 氏名 → 姓/名（未入力最優先）
+        let skipThisRow = false;
         if (fullNameKey && (wantLast || wantFirst)) {
-          const nm = normalizeName(row[fullNameKey]);
+          const rawName = row[fullNameKey];
+          const nm = normalizeName(rawName);
           let lastVal  = (nm.last  ?? '').trim();
           let firstVal = (nm.first ?? '').trim();
 
+          // 両方空（＝本当に不明）ならスキップ
           if (!lastVal && !firstVal) {
-            skipThisRowDueToEmptyName = true;
+            skipThisRow = true;
           } else {
+            // 名が空だけなら「※」
             if (lastVal && !firstVal) firstVal = '※';
             if (lastKey)  outRow[lastKey]  = lastVal;
             if (firstKey) outRow[firstKey] = firstVal;
           }
         }
-        if (skipThisRowDueToEmptyName) continue;
+        if (skipThisRow) continue;
 
-        // 3) 会社名の設定（強化版）
-        if (sampleHeaders.includes('company_name') && isBlankish(outRow['company_name'])) {
-          let candidate = '';
-
-          if (!headerless) {
-            // 見出しで company_name に分類された列 or “会社っぽい”セルから抽出
-            for (const [k, v] of Object.entries(row)) {
-              if (v == null) continue;
-              const s = String(v).trim();
-              if (!s) continue;
-
-              const cls = (classifyMap[k] || classifyHeader(k));
-              if (cls === 'company_name') {
-                const ex = extractCompanyLike(s);
-                if (ex && !isBlankish(ex)) { candidate = ex; break; }
-              }
-              if (COMPANY_PAT.test(s)) {
-                const ex = extractCompanyLike(s);
-                if (ex && !isBlankish(ex)) { candidate = ex; break; }
-              }
+        // 3) 会社名：ヘッダーありはコピー結果を優先／無ければ3列目フォールバック（セル全体）
+        if (sampleHeaders.includes('company_name') && (!outRow['company_name'] || String(outRow['company_name']).trim()==='')) {
+          const rowHeaders = Object.keys(row || {});
+          if (headerless) {
+            const thirdKey = '__col2'; // 0,1,2 → 3列目
+            if (thirdKey in row && String(row[thirdKey]).trim() !== '') {
+              outRow['company_name'] = String(row[thirdKey]).trim();
             }
-          }
-
-          // ヘッダー無し/不確実：列推定（氏名列を除外）
-          if (!candidate && guessedCompanyKey) {
-            const ex = extractCompanyLike(row[guessedCompanyKey]);
-            if (ex && !isBlankish(ex)) candidate = ex;
-          }
-
-          // 最後のフォールバック：3列目（ヘッダー無し時は __col2）
-          if (!candidate) {
-            const rowHeaders = Object.keys(row || {});
-            const thirdKey = headerless ? '__col2' : rowHeaders[2];
+          } else {
+            // ヘッダーありでも company_name が空なら“3列目”に最後の望みを託す（従来フォールバック）
+            const thirdKey = rowHeaders[2];
             if (thirdKey && thirdKey !== fullNameKey) {
-              const ex = extractCompanyLike(row[thirdKey]);
-              if (ex && !isBlankish(ex)) candidate = ex;
+              const v = row[thirdKey];
+              if (v != null && String(v).trim()!=='') outRow['company_name'] = String(v).trim();
             }
           }
-
-          if (candidate) outRow['company_name'] = candidate;
         }
 
         // 4) 1つでも値があれば採用
@@ -492,11 +376,10 @@
         if(hasAny) out.push(outRow);
       }
 
-      // ===== 出力（2,500件で分割） =====
+      // 出力（2,500件分割）
       const srcName = (sourceInput.files && sourceInput.files[0] && sourceInput.files[0].name) || '';
       const suffix  = deriveSuffixFromSourceName(srcName);
       const base    = 'converted_admin_customer_list' + (suffix ? '_' + suffix : '');
-
       const CHUNK = 2500;
       if (out.length > CHUNK){
         const total = Math.ceil(out.length / CHUNK);
@@ -523,7 +406,6 @@
       URL.revokeObjectURL(a.href);
     }
 
-    // 初期化：ローカルの admin-customer-list-sample.csv を試す
     fetchLocalSampleFallback();
   </script>
 </body>
