@@ -83,10 +83,9 @@
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
         <li>氏名は<strong>最初の半角スペース</strong>で分割。オプションで全角も分割。</li>
         <li>漢字＋英字混在は、英字のみ除去してから分割（スペースは維持）。</li>
-        <li>「姓/名」が別列で来た場合は<strong>そのまま写す</strong>（空なら両方「未入力」）。</li>
-        <li>分割不能で姓だけ得られた場合は<strong>名に「※」</strong>。完全に不明なら<strong>両方「未入力」</strong>。</li>
-        <li>会社名/部署/役職は見出し語や文面から推定して配置。</li>
-        <li>サンプルCSV取得失敗時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
+        <li>「姓/名」別列なら<strong>そのまま採用</strong>。片方/両方空なら自動で<strong>「未入力」</strong>補完。</li>
+        <li>会社名/部署/役職は文面から推定して配置。</li>
+        <li>サンプルCSV未指定/取得失敗時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件を超える場合は<strong>2500件ごと</strong>に自動分割して複数ファイルを出力。</li>
       </ul>
     </details>
@@ -112,7 +111,7 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 見出し→標準列マップ（日本語もカバー）
+    // 見出し→標準列マップ
     const headerMap = {
       '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
@@ -123,15 +122,12 @@
       'サポーターID':'supporter_id','supporterId':'supporter_id'
     };
 
-    // 姓・名の候補キー
     const LAST_NAME_KEYS  = ['姓','苗字','名字','last_name','lastName','family_name','familyName'];
     const FIRST_NAME_KEYS = ['名','名前','first_name','firstName','given_name','givenName'];
 
-    // 役職/部署のキーワード
     const POSITION_KEYWORDS = /(取締役|代表|社長|副社長|CEO|COO|CTO|CFO|CIO|Chief|会長|専務|常務|本部長|部長|次長|課長|マネージャ|Manager|Lead|リーダ|主任|役員|顧問|Advisor|顧客担当|営業担当|部門長)/i;
     const DEPT_KEYWORDS     = /(本部|部|課|室|センター|事業部|営業部|総務部|人事部|経理部|財務部|開発部|マーケティング|広報|法務|カスタマーサクセス|CS|企画|品質|製造|DX|IT|情報システム|情報企画)/i;
 
-    // よくある姓（抜粋）
     const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
 
     const EMPTY_NAME_TOKENS = new Set(['', '未入力', 'false', 'FALSE', 'na', 'NA', '-', 'ー', 'N/A']);
@@ -199,13 +195,11 @@
     function normalizeName(raw){
       if (raw == null) return { last: '', first: '' };
       let s = String(raw).trim();
-      // 「未入力/空」を検知したら即リターン（両方未入力扱い）
       if (EMPTY_NAME_TOKENS.has(s)) return { last: '', first: '' };
 
       const hasKanji = /[\u4E00-\u9FFF]/.test(s);
       const hasLatin = /[A-Za-z]/.test(s);
 
-      // 漢字主体
       if (hasKanji) {
         if (stripAscii.checked) s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
         let i = s.indexOf(' ');
@@ -220,7 +214,6 @@
         return { last: s, first: '' };
       }
 
-      // ローマ字（最後のスペースで分割：右=last / 左=first）
       if (hasLatin) {
         s = s.replace(/\s+/g, ' ').trim();
         const j = s.lastIndexOf(' ');
@@ -230,7 +223,6 @@
         return { last, first };
       }
 
-      // かな等
       let k = s.indexOf(' ');
       if (k < 0 && useZenkaku && useZenkaku.checked) k = s.indexOf('　');
       if (k >= 0) {
@@ -242,7 +234,6 @@
       return { last: s, first: '' };
     }
 
-    // 「姓/名」が別列で来たケースを拾う
     function pickSeparateNames(row){
       const keys = Object.keys(row || {});
       const lastKey  = keys.find(k => LAST_NAME_KEYS.some(t => k.toLowerCase() === t.toLowerCase()));
@@ -253,6 +244,7 @@
       return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: Boolean(lastKey || firstKey) };
     }
 
+    // —— サンプル列の採用 —— //
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
         sampleHeaders = meta.fields;
@@ -263,13 +255,6 @@
         sampleColsDiv.textContent = sampleHeaders.join(' | ');
         sampleStatus.textContent = 'サンプルCSVが見つからないため既定列を使用中';
       }
-          // 🔽 ここを追加：空欄なら自動で未入力補完
-    if(!last)  last='未入力';
-    if(!first) first='未入力';
-    o.last_name=last;
-    o.first_name=first;
-    if(Object.values(o).some(v=>String(v).trim()!==''))out.push(o);
-  }
     }
 
     async function parseFile(file,onDone){
@@ -297,7 +282,7 @@
       }
     }
 
-    // 入力読み込み：ヘッダなしCSVでも左端を氏名としてフォールバック
+    // 入力読み込み
     sourceInput.addEventListener('change', async () => {
       const f = sourceInput.files && sourceInput.files[0];
       if (!f) return;
@@ -318,6 +303,7 @@
       });
     });
 
+    // サンプル読み込み
     sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
       if(!f) return;
@@ -331,13 +317,8 @@
       if(!text) return false;
       return /(株式会社|有限会社|合同会社|合資会社|合名会社|Inc\.?|LLC|GmbH|Ltd\.?|Co\.|Company|Holdings|HD|大学|研究所|機構|財団|社団)/i.test(text);
     }
-
-    function looksPositionLike(text){
-      return POSITION_KEYWORDS.test(text || '');
-    }
-    function looksDepartmentLike(text){
-      return DEPT_KEYWORDS.test(text || '');
-    }
+    function looksPositionLike(text){ return POSITION_KEYWORDS.test(text || ''); }
+    function looksDepartmentLike(text){ return DEPT_KEYWORDS.test(text || ''); }
 
     // 2500件ごとに分割保存
     function saveCsvChunks(rows, srcFileName, sampleHeaders){
@@ -364,6 +345,7 @@
       }
     }
 
+    // 変換
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
 
@@ -388,16 +370,14 @@
           }
         }
 
-        // 1.8) company_name/department/position が空なら、適当な列の値から推定
+        // 1.8) company_name/department/position の推定補完
         if(sampleHeaders.includes('company_name') && !outRow['company_name']){
-          // 明示の company 系ヘッダが無い時、3列目などから拾う
           const keys = Object.keys(row||{});
           for(let k of keys){
             const v = String(row[k] ?? '').trim();
             if(!v) continue;
             if(looksCompanyLike(v)){ outRow['company_name']=v; break; }
           }
-          // それでも空なら、氏名列以外の3列目を候補に
           if(!outRow['company_name'] && keys[2] && keys[2] !== fullNameKey){
             const v = String(row[keys[2]] ?? '').trim();
             if(v) outRow['company_name'] = v;
@@ -412,7 +392,6 @@
         }
         if(sampleHeaders.includes('department') && !outRow['department']){
           const keys = Object.keys(row||{});
-          // 複数候補があるときは結合（改行）
           const depts = [];
           for(let k of keys){
             const v = String(row[k] ?? '').trim();
@@ -421,8 +400,7 @@
           if(depts.length) outRow['department'] = Array.from(new Set(depts)).join('\n');
         }
 
-        // 2) 氏名（優先順）
-        // 2-a) 「姓/名」分離列があればそれを最優先で採用
+        // 2) 氏名
         let lastVal = '', firstVal = '';
         if (wantLast || wantFirst){
           const sep = pickSeparateNames(row);
@@ -430,7 +408,6 @@
             lastVal  = sep.last;
             firstVal = sep.first;
           } else if (fullNameKey){
-            // 2-b) フルネーム列から分割
             const rawName = String(row[fullNameKey] ?? '').trim();
             if (EMPTY_NAME_TOKENS.has(rawName.toLowerCase ? rawName.toLowerCase() : rawName)) {
               lastVal = ''; firstVal = '';
@@ -438,17 +415,13 @@
               const nm = normalizeName(rawName);
               lastVal  = (nm.last  ?? '').trim();
               firstVal = (nm.first ?? '').trim();
-              // 分割不能（姓のみ）の場合は名に「※」
               if (lastVal && !firstVal) firstVal = '※';
             }
           }
         }
-
-        // 2-c) まったく取れなかったら両方「未入力」
-        if (!lastVal && !firstVal){
-          lastVal = '未入力';
-          firstVal = '未入力';
-        }
+        // 空が残る場合は自動で「未入力」補完
+        if (!lastVal)  lastVal  = '未入力';
+        if (!firstVal) firstVal = '未入力';
 
         if (lastKey)  outRow[lastKey]  = lastVal;
         if (firstKey) outRow[firstKey] = firstVal;
@@ -458,11 +431,11 @@
         if(hasAny) out.push(outRow);
       }
 
-      // 4) 出力（2500件で分割）
       const srcName = (sourceInput.files && sourceInput.files[0] && sourceInput.files[0].name) || '';
       saveCsvChunks(out, srcName, sampleHeaders);
     });
 
+    // 起動時：ローカルのサンプルCSVを試す（失敗すれば既定列）
     fetchLocalSampleFallback();
   </script>
 </body>
