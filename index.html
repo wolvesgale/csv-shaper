@@ -263,6 +263,13 @@
         sampleColsDiv.textContent = sampleHeaders.join(' | ');
         sampleStatus.textContent = 'サンプルCSVが見つからないため既定列を使用中';
       }
+          // 🔽 ここを追加：空欄なら自動で未入力補完
+    if(!last)  last='未入力';
+    if(!first) first='未入力';
+    o.last_name=last;
+    o.first_name=first;
+    if(Object.values(o).some(v=>String(v).trim()!==''))out.push(o);
+  }
     }
 
     async function parseFile(file,onDone){
