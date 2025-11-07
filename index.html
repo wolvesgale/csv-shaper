@@ -39,7 +39,7 @@
         <div id="sampleStatus" class="muted" style="margin-top:6px"></div>
       </div>
       <div class="col">
-        <label>② 変換する元CSV（人脈リスト）</label>
+        <label>② 変換する元CSV</label>
         <input id="sourceCsv" type="file" accept=".csv" />
       </div>
     </div>
@@ -80,10 +80,10 @@
     <summary>仕様（クリックで展開）</summary>
     <ul>
       <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
-      <li>氏名：最初の半角/全角スペースで分割（名が空→「※」／両方空→スキップ）。</li>
-      <li>氏名が <code>未入力/【未入力】/FALSE/N/A/-/空白</code> の場合は姓・名ともに<strong>未入力</strong>。</li>
-      <li>会社名：ヘッダーあり＝マッピング優先／ヘッダーなし＝3列目フォールバック。ただし <em>isLikelyCompany()</em> を満たす値のみ採用。</li>
-      <li>2,500件超は分割出力（partXX）。</li>
+      <li>氏名：最初の半角/全角スペースで分割（名が空→「※」）。氏名が見当たらない/空/未入力相当なら<strong>姓・名ともに【未入力】</strong>。</li>
+      <li>会社名：入力CSVから自動認識。<em>法人っぽい</em>値のみ採用（サービス名/URLは除外）。</li>
+      <li>部署・役職：入力CSV中の該当列を自動検出して採用（重複時は最初のヒット）。</li>
+      <li>2,500件超は分割出力（partXX）。ファイル名サフィックス付与。</li>
     </ul>
   </details>
 
@@ -92,6 +92,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script>
+/* ===== DOM ===== */
 const sampleInput = document.getElementById('sampleCsv');
 const sourceInput = document.getElementById('sourceCsv');
 const fullNameColSelect = document.getElementById('fullNameCol');
@@ -104,11 +105,36 @@ const useZenkaku = document.getElementById('useZenkaku');
 const useHeuristic = document.getElementById('useHeuristic');
 const sampleStatus = document.getElementById('sampleStatus');
 
+/* ===== 出力（既定） ===== */
 const DEFAULT_TARGET_HEADERS = [
   'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
 ];
 
-// 日本語→英語ヘッダーマッピング
+/* ===== 列名エイリアス（成果物側の列名ゆらぎ対策） ===== */
+const TARGET_KEYS = {
+  company_name: ['company_name','Company -Name','Company Name','社名','会社名','企業名'],
+  department:   ['department','部署','部門','所属','所属部署'],
+  position:     ['position','役職','肩書','役割','役目'],
+  last_name:    ['last_name','姓','last','Last Name'],
+  first_name:   ['first_name','名','first','First Name']
+};
+function resolveTargetKey(headers, aliases){
+  const lower = headers.map(h=>({raw:h,low:h.toLowerCase()}));
+  for(const a of aliases){
+    const al = a.toLowerCase();
+    const hit = lower.find(x=>x.low===al);
+    if(hit) return hit.raw;
+  }
+  // ゆるい包含一致
+  for(const a of aliases){
+    const al = a.toLowerCase();
+    const hit = lower.find(x=>x.low.includes(al));
+    if(hit) return hit.raw;
+  }
+  return null;
+}
+
+/* ===== 日本語→英語ヘッダーマッピング（入力→出力） ===== */
 const headerMap = {
   '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
   '会社番号':'company_number',
@@ -119,13 +145,37 @@ const headerMap = {
   'サポーターID':'supporter_id','supporterId':'supporter_id'
 };
 
-// よくある姓（抜粋）
+/* ===== 苗字辞書(抜粋) ===== */
 const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
 
+/* ===== 部署/役職/会社 判定 ===== */
+const LEGAL_MARKERS = /(株式会社|有限会社|合同会社|合名会社|合資会社|社|大学|学園|病院|研究所|製作所|工業|工務店|商事|商会|興業|不動産|銀行|証券|保険|出版|通信|運輸|運送|製薬|金属|電機|機械|製紙|ホールディングス|カンパニー|Company|Inc\.?|LLC|Ltd\.?|Co\.|GmbH|S\.A\.|Pte\.?)/i;
+const SERVICE_NOISE = /(サービス|プラン|コース|アプリ|β|Beta|ベータ|システム|SaaS|プロダクト|製品|ソリューション|クラウド|ツール|無料|キャンペーン)/i;
+
+const DEPT_PAT = /(人事|採用|総務|経理|財務|法務|監査|広報|PR|宣伝|IR|営業|販売|マーケ|ﾏｰｹ|企画|事業|事業開発|BizDev|開発|研究|研究開発|R&D|技術|製造|生産|品質|QC|情報システム|情報ｼｽﾃﾑ|情シス|情ｼｽ|IT|CS|カスタマーサクセス|サポート|カスタマーサポート|教育|トレーニング|物流|ロジ|購買|調達|デザイン|設計|DX|データ|データサイエンス|解析|運用|保守|管理部|管理本部|○○部|○○課)/i;
+
+const POS_PAT = /(代表取締役|取締役|執行役員|監査役|社長|副社長|会長|専務|常務|本部長|部長|次長|課長|係長|主任|店長|支店長|所長|室長|センター長|科長|チーフ|リーダ|責任者|担当者|マネージャ|マネジャ|Manager|Director|VP|Head|Lead|Chief|Owner|President|CEO|COO|CTO|CIO|CFO|CMO|CHRO|CPO|CSO|CISO)/i;
+
+function looksLikeUrlOrId(s){ return /https?:\/\//i.test(s)||/[@#]/.test(s); }
+function isLikelyCompany(v){
+  if (v==null) return false;
+  const s = String(v).trim();
+  if (!s) return false;
+  if (looksLikeUrlOrId(s)) return false;
+  if (SERVICE_NOISE.test(s) && !LEGAL_MARKERS.test(s)) return false;
+  if (LEGAL_MARKERS.test(s)) return true;
+  const kanaKanji = (s.match(/[\u30A0-\u30FF\u4E00-\u9FFF]/g)||[]).length / s.length;
+  return kanaKanji>0.6 && s.length>=3; // 会社名らしいカタカナ/漢字
+}
+function isDept(v){ return v!=null && DEPT_PAT.test(String(v)); }
+function isPos(v){ return v!=null && POS_PAT.test(String(v)); }
+
+/* ===== 状態 ===== */
 let sampleHeaders = [];
 let sourceRows = [];
 let headerless = false;
 
+/* ===== UI ===== */
 function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
 function tryAutoFullNameCol(headers){
@@ -151,7 +201,7 @@ function renderPreview(){
   previewTable.appendChild(tbody);
 }
 
-// ===== ファイル名サフィックス =====
+/* ===== ファイル名サフィックス ===== */
 function deriveSuffixFromSourceName(filename) {
   if (!filename) return '';
   const base = filename.replace(/\.[^.]+$/, '');
@@ -164,25 +214,61 @@ function deriveSuffixFromSourceName(filename) {
 }
 function sanitizeForFilename(s){ return s.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '').slice(0,80); }
 
-// ===== 会社名推定 =====
-const LEGAL_MARKERS = /(株式会社|有限会社|合同会社|合名会社|合資会社|社|大学|学園|病院|研究所|製作所|工業|工務店|商事|商会|興業|不動産|銀行|証券|保険|出版|通信|運輸|運送|製薬|金属|電機|機械|製紙|ホールディングス|カンパニー|Company|Inc\.?|LLC|Ltd\.?|Co\.|GmbH|S\.A\.|Pte\.?)/i;
-const SERVICE_NOISE = /(サービス|プラン|コース|アプリ|アプリケーション|β|Beta|ベータ|システム|SaaS|プロダクト|製品|ソリューション|クラウド|ツール|パッケージ|無料|キャンペーン)/i;
-function looksLikeUrlOrId(s){ return /https?:\/\//i.test(s) || /[@#]/.test(s); }
-function isLikelyCompany(v){
-  if (v == null) return false;
-  const s = String(v).trim();
-  if (!s) return false;
-  if (looksLikeUrlOrId(s)) return false;
-  if (SERVICE_NOISE.test(s) && !LEGAL_MARKERS.test(s)) return false;
-  // 2文字以下は弾く（例：社名が「株式会社」だけ等）
-  if (s.length <= 2) return false;
-  // 法人っぽい語がある、またはカタカナ/漢字中心の固有名詞長め
-  if (LEGAL_MARKERS.test(s)) return true;
-  const kanaKanjiRatio = ((s.match(/[\u30A0-\u30FF\u4E00-\u9FFF]/g)||[]).length) / s.length;
-  return kanaKanjiRatio > 0.6 && s.length >= 3;
+/* ===== パース（ヘッダー有無自動判定） ===== */
+async function parseSmart(file){
+  const res1 = await new Promise(resolve=>{
+    Papa.parse(file,{ header:true, skipEmptyLines:'greedy',
+      complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
+  });
+  const headers1 = (res1.meta && res1.meta.fields) || [];
+  const row0 = (res1.data && res1.data[0]) || null;
+  const looksHeaderless = !headers1.length
+    || (row0 && Object.keys(row0).length && Object.values(row0).every(v => v == null || v === ''))
+    || headers1.some(h => /^column\d+$/i.test(h));
+  if (!looksHeaderless) { headerless = false; return res1; }
+
+  const res2 = await new Promise(resolve=>{
+    Papa.parse(file,{ header:false, skipEmptyLines:'greedy',
+      complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
+  });
+  const norm = (res2.data || []).map(arr=>{
+    const o = {};
+    (arr || []).forEach((v,i)=>{ o[`__col${i}`] = v; });
+    return o;
+  });
+  headerless = true;
+  return { data: norm, meta: { fields: Object.keys(norm[0] || {}) } };
+}
+async function parseFile(file,onDone){
+  const res = await parseSmart(file);
+  onDone(res.data || [], res.meta || {});
 }
 
-// ===== 名前分割ユーティリティ =====
+/* ===== サンプル列採用 ===== */
+function adoptHeadersFromSample(meta){
+  if(meta && meta.fields && meta.fields.length){
+    sampleHeaders = meta.fields;
+    sampleColsDiv.textContent = sampleHeaders.join(' | ');
+    sampleStatus.textContent = 'サンプルCSVを使用中';
+  }else{
+    sampleHeaders = DEFAULT_TARGET_HEADERS.slice();
+    sampleColsDiv.textContent = sampleHeaders.join(' | ');
+    sampleStatus.textContent = 'サンプルCSVが見つからないため既定列を使用中';
+  }
+}
+
+/* ===== 名前ユーティリティ ===== */
+function isMiNyuuryoku(s){
+  if (s == null) return true;
+  const t = String(s).trim();
+  if (!t) return true;
+  if (/^false$/i.test(t)) return true;
+  if (/^n\/?a$/i.test(t)) return true;
+  if (/^-+$/.test(t)) return true;
+  if (/未\s*入\s*力/.test(t)) return true;
+  if (/^【?未入力】?$/.test(t)) return true;
+  return false;
+}
 function heuristicSplitKanji(s){
   for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
     if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
@@ -193,22 +279,8 @@ function heuristicSplitKanji(s){
   const mid = Math.max(1, Math.floor(s.length/2));
   return { last: s.slice(0,mid), first: s.slice(mid) };
 }
-
-// 「未入力」判定（括弧含む／FALSE/N/A/-/空白）
-function isMiNyuuryoku(s){
-  if (s == null) return true; // null/undefined → 未入力扱い
-  const t = String(s).trim();
-  if (!t) return true;
-  if (/^false$/i.test(t)) return true;
-  if (/^n\/?a$/i.test(t)) return true;
-  if (/^-+$/.test(t)) return true;
-  if (/未\s*入\s*力/.test(t)) return true;          // 未入力 / 【未入力】
-  if (/^【?未入力】?$/.test(t)) return true;
-  return false;
-}
-
 function normalizeName(raw){
-  // ★ 最優先：未入力相当
+  // 氏名が無い/未入力 → 両方【未入力】
   if (isMiNyuuryoku(raw)) return { last: '未入力', first: '未入力' };
 
   let s = String(raw).trim();
@@ -246,53 +318,11 @@ function normalizeName(raw){
     if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
     return { last, first };
   }
+  // 文字種不明でも空ではない → 姓に寄せる（名は※）
   return { last: s, first: '' };
 }
 
-// ===== サンプル列採用 =====
-function adoptHeadersFromSample(meta){
-  if(meta && meta.fields && meta.fields.length){
-    sampleHeaders = meta.fields;
-    sampleColsDiv.textContent = sampleHeaders.join(' | ');
-    sampleStatus.textContent = 'サンプルCSVを使用中';
-  }else{
-    sampleHeaders = DEFAULT_TARGET_HEADERS.slice();
-    sampleColsDiv.textContent = sampleHeaders.join(' | ');
-    sampleStatus.textContent = 'サンプルCSVが見つからないため既定列を使用中';
-  }
-}
-
-// ===== パース（ヘッダー有無自動判定）=====
-async function parseSmart(file){
-  const res1 = await new Promise(resolve=>{
-    Papa.parse(file,{ header:true, skipEmptyLines:'greedy',
-      complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
-  });
-  const headers1 = (res1.meta && res1.meta.fields) || [];
-  const row0 = (res1.data && res1.data[0]) || null;
-  const looksHeaderless = !headers1.length
-    || (row0 && Object.keys(row0).length && Object.values(row0).every(v => v == null || v === ''))
-    || headers1.some(h => /^column\d+$/i.test(h));
-  if (!looksHeaderless) { headerless = false; return res1; }
-
-  const res2 = await new Promise(resolve=>{
-    Papa.parse(file,{ header:false, skipEmptyLines:'greedy',
-      complete:(res)=>resolve(res), error:()=>resolve({data:[],meta:{}}) });
-  });
-  const norm = (res2.data || []).map(arr=>{
-    const o = {};
-    (arr || []).forEach((v,i)=>{ o[`__col${i}`] = v; });
-    return o;
-  });
-  headerless = true;
-  return { data: norm, meta: { fields: Object.keys(norm[0] || {}) } };
-}
-async function parseFile(file,onDone){
-  const res = await parseSmart(file);
-  onDone(res.data || [], res.meta || {});
-}
-
-// ===== ローカルサンプル読込 =====
+/* ===== ローカルサンプル読込 ===== */
 async function fetchLocalSampleFallback(){
   try{
     const resp = await fetch('./admin-customer-list-sample.csv',{ credentials:'same-origin' });
@@ -307,7 +337,7 @@ async function fetchLocalSampleFallback(){
   }
 }
 
-// ===== イベント =====
+/* ===== イベント ===== */
 sampleInput.addEventListener('change', async()=>{
   const f = sampleInput.files && sampleInput.files[0];
   if(!f) return;
@@ -327,68 +357,64 @@ sourceInput.addEventListener('change', async () => {
       '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
       headers.map((h) => `<option>${h}</option>`).join('');
     let detected = tryAutoFullNameCol(headers);
-    if (!detected && headers.length > 0) detected = headers[0]; // ヘッダー無しは最左列
+    if (!detected && headers.length > 0) detected = headers[0]; // ヘッダー無しは最左列を氏名扱い
     fullNameColSelect.value = detected || '';
     setButtonState();
   });
 });
 
-// ===== 変換 =====
+/* ===== 変換 ===== */
 convertBtn.addEventListener('click', ()=>{
   if(!sampleHeaders.length || !sourceRows.length) return;
+
+  // 成果物側のキーをエイリアスから確定
+  const kCompany = resolveTargetKey(sampleHeaders, TARGET_KEYS.company_name);
+  const kDept    = resolveTargetKey(sampleHeaders, TARGET_KEYS.department);
+  const kPos     = resolveTargetKey(sampleHeaders, TARGET_KEYS.position);
+  const kLast    = resolveTargetKey(sampleHeaders, TARGET_KEYS.last_name);
+  const kFirst   = resolveTargetKey(sampleHeaders, TARGET_KEYS.first_name);
+
   const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
-
-  const wantLast  = sampleHeaders.includes('last_name')  || sampleHeaders.includes('姓');
-  const wantFirst = sampleHeaders.includes('first_name') || sampleHeaders.includes('名');
-  const lastKey   = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
-  const firstKey  = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
-
   const out = [];
+
   for(const row of sourceRows){
     const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
-    // 1) 同名ヘッダコピー & 日本語→英語
+    // 1) 同名ヘッダコピー & 日本語→英語マッピング（破壊しない）
     for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
     for(const [jp,en] of Object.entries(headerMap)){
       if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
     }
 
-    // 2) 氏名 → 姓/名（未入力最優先）
-    let skipThisRow = false;
-    if (fullNameKey && (wantLast || wantFirst)) {
-      const rawName = row[fullNameKey];
-      const nm = normalizeName(rawName); // 未入力なら両方「未入力」
-      let lastVal  = (nm.last  ?? '').trim();
-      let firstVal = (nm.first ?? '').trim();
-
-      // 「normalizeName」で未入力化されていればここは空ではない
-      if (!lastVal && !firstVal) {
-        // ここに来るのは完全空白だけ → スキップ
-        skipThisRow = true;
-      } else {
-        if (lastVal && !firstVal) firstVal = '※';
-        if (lastKey)  outRow[lastKey]  = lastVal;
-        if (firstKey) outRow[firstKey] = firstVal;
-      }
+    // 2) 氏名 → 姓/名（最優先：未入力対処）
+    let nm = {last:'未入力', first:'未入力'};
+    if (fullNameKey in row && !isMiNyuuryoku(row[fullNameKey])) {
+      nm = normalizeName(row[fullNameKey]);
+      // 名が空で姓のみ判定された場合は「※」
+      if (nm.last && !nm.first) nm.first = '※';
     }
-    if (skipThisRow) continue;
+    if (kLast)  outRow[kLast]  = nm.last  ?? '未入力';
+    if (kFirst) outRow[kFirst] = nm.first ?? '未入力';
 
-    // 3) 会社名：未設定ならフォールバック採用（ヘッダーなし＝3列目 __col2、あり＝3列目キー）
-    if (sampleHeaders.includes('company_name') && (!outRow['company_name'] || String(outRow['company_name']).trim()==='')) {
-      const rowHeaders = Object.keys(row || {});
-      let candidate = null;
-      if (headerless) {
-        candidate = row['__col2'];
-      } else {
-        const thirdKey = rowHeaders[2];
-        if (thirdKey && thirdKey !== fullNameKey) candidate = row[thirdKey];
-      }
-      if (isLikelyCompany(candidate)) outRow['company_name'] = String(candidate).trim();
+    // 3) 会社名 / 部署 / 役職 自動抽出（空のときだけ補完）
+    const vals = Object.values(row || {});
+    if (kCompany && (!outRow[kCompany] || String(outRow[kCompany]).trim()==='')) {
+      const hit = vals.find(v => isLikelyCompany(v));
+      if (hit) outRow[kCompany] = String(hit).trim();
+    }
+    if (kDept && (!outRow[kDept] || String(outRow[kDept]).trim()==='')) {
+      const hit = vals.find(v => isDept(v));
+      if (hit) outRow[kDept] = String(hit).trim();
+    }
+    if (kPos && (!outRow[kPos] || String(outRow[kPos]).trim()==='')) {
+      // 役職は部署語と混同しやすいので、部署にヒットした文字列は除外して再検索
+      const hit = vals.find(v => isPos(v) && !isDept(v));
+      if (hit) outRow[kPos] = String(hit).trim();
     }
 
     // 4) 1つでも値があれば採用
     const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
-    if(hasAny) out.push(outRow);
+    if (hasAny) out.push(outRow);
   }
 
   // 5) 出力（2,500件分割）
@@ -421,6 +447,20 @@ function downloadCsv(headers, rows, filename){
   URL.revokeObjectURL(a.href);
 }
 
+/* ===== 起動 ===== */
+async function fetchLocalSampleFallback(){
+  try{
+    const resp = await fetch('./admin-customer-list-sample.csv',{ credentials:'same-origin' });
+    if(!resp.ok) throw new Error('fetch failed');
+    const text = await resp.text();
+    const parsed = Papa.parse(text,{ header:true });
+    adoptHeadersFromSample(parsed.meta);
+  }catch(_){
+    adoptHeadersFromSample({});
+  }finally{
+    setButtonState();
+  }
+}
 fetchLocalSampleFallback();
 </script>
 </body>
