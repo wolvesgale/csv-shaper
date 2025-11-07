@@ -80,9 +80,10 @@
     <summary>仕様（クリックで展開）</summary>
     <ul>
       <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
-      <li>氏名：最初の半角/全角スペースで分割（名が空→「※」）。氏名が見当たらない/空/未入力相当なら<strong>姓・名ともに【未入力】</strong>。</li>
-      <li>会社名：入力CSVから自動認識。<em>法人っぽい</em>値のみ採用（サービス名/URLは除外）。</li>
+      <li>氏名：最初の半角/全角スペースで分割。名が空→「※」。氏名が見当たらない/数字等のみ/未入力時は<strong>姓・名ともに【未入力】</strong>。</li>
+      <li>会社名：入力CSVから自動認識（法人らしさ判定、サービス名/URLは除外）。</li>
       <li>部署・役職：入力CSV中の該当列を自動検出して採用（重複時は最初のヒット）。</li>
+      <li>company_number が空なら、行内の数値ID（例：3216）を自動採用。</li>
       <li>2,500件超は分割出力（partXX）。ファイル名サフィックス付与。</li>
     </ul>
   </details>
@@ -110,25 +111,23 @@ const DEFAULT_TARGET_HEADERS = [
   'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
 ];
 
-/* ===== 列名エイリアス（成果物側の列名ゆらぎ対策） ===== */
+/* ===== 列名エイリアス ===== */
 const TARGET_KEYS = {
   company_name: ['company_name','Company -Name','Company Name','社名','会社名','企業名'],
   department:   ['department','部署','部門','所属','所属部署'],
   position:     ['position','役職','肩書','役割','役目'],
   last_name:    ['last_name','姓','last','Last Name'],
-  first_name:   ['first_name','名','first','First Name']
+  first_name:   ['first_name','名','first','First Name'],
+  company_number: ['company_number','会社番号','顧客番号','番号']
 };
 function resolveTargetKey(headers, aliases){
   const lower = headers.map(h=>({raw:h,low:h.toLowerCase()}));
   for(const a of aliases){
-    const al = a.toLowerCase();
-    const hit = lower.find(x=>x.low===al);
+    const hit = lower.find(x=>x.low===a.toLowerCase());
     if(hit) return hit.raw;
   }
-  // ゆるい包含一致
   for(const a of aliases){
-    const al = a.toLowerCase();
-    const hit = lower.find(x=>x.low.includes(al));
+    const hit = lower.find(x=>x.low.includes(a.toLowerCase()));
     if(hit) return hit.raw;
   }
   return null;
@@ -137,7 +136,7 @@ function resolveTargetKey(headers, aliases){
 /* ===== 日本語→英語ヘッダーマッピング（入力→出力） ===== */
 const headerMap = {
   '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
-  '会社番号':'company_number',
+  '会社番号':'company_number','顧客番号':'company_number',
   '部署':'department','部門':'department','所属':'department','所属部署':'department',
   '役職':'position','役割':'position','肩書':'position',
   'URL':'contact_url','リンク':'contact_url','Web':'contact_url',
@@ -152,8 +151,7 @@ const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺',
 const LEGAL_MARKERS = /(株式会社|有限会社|合同会社|合名会社|合資会社|社|大学|学園|病院|研究所|製作所|工業|工務店|商事|商会|興業|不動産|銀行|証券|保険|出版|通信|運輸|運送|製薬|金属|電機|機械|製紙|ホールディングス|カンパニー|Company|Inc\.?|LLC|Ltd\.?|Co\.|GmbH|S\.A\.|Pte\.?)/i;
 const SERVICE_NOISE = /(サービス|プラン|コース|アプリ|β|Beta|ベータ|システム|SaaS|プロダクト|製品|ソリューション|クラウド|ツール|無料|キャンペーン)/i;
 
-const DEPT_PAT = /(人事|採用|総務|経理|財務|法務|監査|広報|PR|宣伝|IR|営業|販売|マーケ|ﾏｰｹ|企画|事業|事業開発|BizDev|開発|研究|研究開発|R&D|技術|製造|生産|品質|QC|情報システム|情報ｼｽﾃﾑ|情シス|情ｼｽ|IT|CS|カスタマーサクセス|サポート|カスタマーサポート|教育|トレーニング|物流|ロジ|購買|調達|デザイン|設計|DX|データ|データサイエンス|解析|運用|保守|管理部|管理本部|○○部|○○課)/i;
-
+const DEPT_PAT = /(人事|採用|総務|経理|財務|法務|監査|広報|PR|宣伝|IR|営業|販売|マーケ|ﾏｰｹ|企画|事業|事業開発|BizDev|開発|研究|研究開発|R&D|技術|製造|生産|品質|QC|情報システム|情報ｼｽﾃﾑ|情シス|情ｼｽ|IT|CS|カスタマーサクセス|サポート|カスタマーサポート|教育|トレーニング|物流|ロジ|購買|調達|デザイン|設計|DX|データ|データサイエンス|解析|運用|保守|管理部|管理本部|部|課|室)/i;
 const POS_PAT = /(代表取締役|取締役|執行役員|監査役|社長|副社長|会長|専務|常務|本部長|部長|次長|課長|係長|主任|店長|支店長|所長|室長|センター長|科長|チーフ|リーダ|責任者|担当者|マネージャ|マネジャ|Manager|Director|VP|Head|Lead|Chief|Owner|President|CEO|COO|CTO|CIO|CFO|CMO|CHRO|CPO|CSO|CISO)/i;
 
 function looksLikeUrlOrId(s){ return /https?:\/\//i.test(s)||/[@#]/.test(s); }
@@ -165,10 +163,16 @@ function isLikelyCompany(v){
   if (SERVICE_NOISE.test(s) && !LEGAL_MARKERS.test(s)) return false;
   if (LEGAL_MARKERS.test(s)) return true;
   const kanaKanji = (s.match(/[\u30A0-\u30FF\u4E00-\u9FFF]/g)||[]).length / s.length;
-  return kanaKanji>0.6 && s.length>=3; // 会社名らしいカタカナ/漢字
+  return kanaKanji>0.6 && s.length>=3;
 }
 function isDept(v){ return v!=null && DEPT_PAT.test(String(v)); }
 function isPos(v){ return v!=null && POS_PAT.test(String(v)); }
+
+/* --- 数値ID（company_number 候補）& 氏名数値誤爆対策 --- */
+function isNumericId(v){
+  const s = String(v ?? '').trim();
+  return /^\d{3,}$/.test(s); // 3桁以上の純数字をIDとみなす
+}
 
 /* ===== 状態 ===== */
 let sampleHeaders = [];
@@ -280,8 +284,8 @@ function heuristicSplitKanji(s){
   return { last: s.slice(0,mid), first: s.slice(mid) };
 }
 function normalizeName(raw){
-  // 氏名が無い/未入力 → 両方【未入力】
-  if (isMiNyuuryoku(raw)) return { last: '未入力', first: '未入力' };
+  // 氏名が未入力・数字のみ・IDっぽい → 両方【未入力】
+  if (isMiNyuuryoku(raw) || isNumericId(raw)) return { last: '未入力', first: '未入力' };
 
   let s = String(raw).trim();
   const hasKanji = /[\u4E00-\u9FFF]/.test(s);
@@ -318,7 +322,6 @@ function normalizeName(raw){
     if (!keepSpaces.checked) first = first.replace(/\s+/g, ' ').trim();
     return { last, first };
   }
-  // 文字種不明でも空ではない → 姓に寄せる（名は※）
   return { last: s, first: '' };
 }
 
@@ -357,7 +360,7 @@ sourceInput.addEventListener('change', async () => {
       '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
       headers.map((h) => `<option>${h}</option>`).join('');
     let detected = tryAutoFullNameCol(headers);
-    if (!detected && headers.length > 0) detected = headers[0]; // ヘッダー無しは最左列を氏名扱い
+    if (!detected && headers.length > 0) detected = headers[0]; // ヘッダ無し → 最左列を氏名扱い
     fullNameColSelect.value = detected || '';
     setButtonState();
   });
@@ -367,12 +370,13 @@ sourceInput.addEventListener('change', async () => {
 convertBtn.addEventListener('click', ()=>{
   if(!sampleHeaders.length || !sourceRows.length) return;
 
-  // 成果物側のキーをエイリアスから確定
+  // 成果物側のキーを確定
   const kCompany = resolveTargetKey(sampleHeaders, TARGET_KEYS.company_name);
   const kDept    = resolveTargetKey(sampleHeaders, TARGET_KEYS.department);
   const kPos     = resolveTargetKey(sampleHeaders, TARGET_KEYS.position);
   const kLast    = resolveTargetKey(sampleHeaders, TARGET_KEYS.last_name);
   const kFirst   = resolveTargetKey(sampleHeaders, TARGET_KEYS.first_name);
+  const kNum     = resolveTargetKey(sampleHeaders, TARGET_KEYS.company_number);
 
   const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
   const out = [];
@@ -380,23 +384,28 @@ convertBtn.addEventListener('click', ()=>{
   for(const row of sourceRows){
     const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
-    // 1) 同名ヘッダコピー & 日本語→英語マッピング（破壊しない）
+    // 1) 同名ヘッダコピー & 日本語→英語マッピング
     for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
     for(const [jp,en] of Object.entries(headerMap)){
       if(en && sampleHeaders.includes(en) && (jp in row)) outRow[en] = row[jp];
     }
 
-    // 2) 氏名 → 姓/名（最優先：未入力対処）
+    // 2) company_number 未設定なら、行内の数値IDを拾う
+    if (kNum && (!outRow[kNum] || String(outRow[kNum]).trim()==='')) {
+      const numHit = Object.values(row).find(v => isNumericId(v));
+      if (numHit) outRow[kNum] = String(numHit).trim();
+    }
+
+    // 3) 氏名（数字・未入力なら【未入力】×2、名だけ空は「※」）
     let nm = {last:'未入力', first:'未入力'};
-    if (fullNameKey in row && !isMiNyuuryoku(row[fullNameKey])) {
+    if (fullNameKey in row && !isMiNyuuryoku(row[fullNameKey]) && !isNumericId(row[fullNameKey])) {
       nm = normalizeName(row[fullNameKey]);
-      // 名が空で姓のみ判定された場合は「※」
       if (nm.last && !nm.first) nm.first = '※';
     }
-    if (kLast)  outRow[kLast]  = nm.last  ?? '未入力';
-    if (kFirst) outRow[kFirst] = nm.first ?? '未入力';
+    if (kLast)  outRow[kLast]  = nm.last;
+    if (kFirst) outRow[kFirst] = nm.first;
 
-    // 3) 会社名 / 部署 / 役職 自動抽出（空のときだけ補完）
+    // 4) 会社名 / 部署 / 役職 自動抽出（空のときだけ補完）
     const vals = Object.values(row || {});
     if (kCompany && (!outRow[kCompany] || String(outRow[kCompany]).trim()==='')) {
       const hit = vals.find(v => isLikelyCompany(v));
@@ -407,17 +416,16 @@ convertBtn.addEventListener('click', ()=>{
       if (hit) outRow[kDept] = String(hit).trim();
     }
     if (kPos && (!outRow[kPos] || String(outRow[kPos]).trim()==='')) {
-      // 役職は部署語と混同しやすいので、部署にヒットした文字列は除外して再検索
       const hit = vals.find(v => isPos(v) && !isDept(v));
       if (hit) outRow[kPos] = String(hit).trim();
     }
 
-    // 4) 1つでも値があれば採用
+    // 5) 1つでも値があれば採用
     const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
     if (hasAny) out.push(outRow);
   }
 
-  // 5) 出力（2,500件分割）
+  // 6) 出力（2,500件分割）
   const srcName = (sourceInput.files && sourceInput.files[0] && sourceInput.files[0].name) || '';
   const suffix  = deriveSuffixFromSourceName(srcName);
   const base    = 'converted_admin_customer_list' + (suffix ? '_' + suffix : '');
