@@ -81,8 +81,8 @@
       <summary>仕様（クリックで展開）</summary>
       <ul>
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
-        <li>姓/名が別列なら<strong>そのまま採用</strong>（空は自動で「未入力」）。</li>
-        <li>氏名1列の場合は半角/全角スペースやタブ/中点/スラッシュ等で安全分割。不可なら「姓＝氏名」「名＝※」。完全不明は両方「未入力」。</li>
+        <li>姓/名が別列なら<strong>そのまま採用</strong>（空は自動で「未入力」）。ただし片側のみの列に区切りがある場合は<strong>フルネームとして再分割</strong>。</li>
+        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。不可なら「姓＝氏名／名＝※」、完全不明は両方「未入力」。</li>
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
@@ -110,7 +110,6 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // —— 見出し→標準列マップ —— //
     const headerMap = {
       '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
@@ -121,37 +120,30 @@
       'サポーターID':'supporter_id','supporterId':'supporter_id'
     };
 
-    // —— 姓・名キーの拡張（BOM/括弧表記も吸収） —— //
-    const LAST_NAME_KEYS  = [
-      '姓','苗字','名字','last_name','lastname','family_name','familyname',
-      '姓(必須)','姓（必須）','姓( 必須 )','姓（必須項目）','姓_必須','姓 必須'
-    ].map(k => k.toLowerCase());
-    const FIRST_NAME_KEYS = [
-      '名','名前','first_name','firstname','given_name','givenname',
-      '名(必須)','名（必須）','名( 必須 )','名（必須項目）','名_必須','名 必須'
-    ].map(k => k.toLowerCase());
+    // キー候補（表記ゆれ/BOM/全角括弧対応）
+    const LAST_NAME_KEYS  = ['姓','苗字','名字','last_name','lastname','family_name','familyname','姓(必須)','姓（必須）','姓（必須項目）'].map(s=>s.toLowerCase());
+    const FIRST_NAME_KEYS = ['名','名前','first_name','firstname','given_name','givenname','名(必須)','名（必須）','名（必須項目）'].map(s=>s.toLowerCase());
 
-    // —— 推定用キーワード —— //
     const POSITION_KEYWORDS = /(取締役|代表|社長|副社長|CEO|COO|CTO|CFO|CIO|Chief|会長|専務|常務|本部長|部長|次長|課長|マネージャ|Manager|Lead|リーダ|主任|役員|顧問|Advisor|部門長)/i;
     const DEPT_KEYWORDS     = /(本部|部|課|室|センター|事業部|営業部|総務部|人事部|経理部|財務部|開発部|マーケティング|広報|法務|カスタマーサクセス|CS|企画|品質|製造|DX|IT|情報システム|情報企画)/i;
 
-    // よくある姓（抜粋）
     const SURNAMES = new Set(['佐藤','鈴木','高橋','田中','伊藤','渡辺','山本','中村','小林','加藤','吉田','山田','佐々木','山口','斎藤','斉藤','井上','木村','林','清水','山崎','阿部','森','池田','橋本','石川','山下','中島','小川','前田','岡田','長谷川','村上','藤田','後藤','小野','松本','近藤','石井','坂本','遠藤','青木','藤井','西村','福田','太田','三浦','中野','中川','松田','竹内','小島','田村','金子','和田','石田','中山','原田','酒井','工藤','池上','大西','本田','宮本','平井','柴田','黒田','北村','島田','岩田','菅原','西田','内田','秋山','安田','星野']);
 
     const EMPTY_NAME_TOKENS = new Set(['', '未入力', 'false', 'FALSE', 'False', 'na', 'NA', '-', 'ー', 'N/A']);
 
-    let sampleHeaders = [];
-    let sourceRows = [];
-
-    // —— ユーティリティ —— //
+    // 正規化ユーティリティ
     const stripBOM = s => (typeof s === 'string' ? s.replace(/^\uFEFF/, '') : s);
     const z2hParens = s => s.replace(/[（]/g,'(').replace(/[）]/g,')');
     const normKey = k => z2hParens(stripBOM(String(k||'')).trim().toLowerCase());
+
+    let sampleHeaders = [];
+    let sourceRows = [];
+
     function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
     function tryAutoFullNameCol(headers){
       const keys = ['氏名','姓名','名前','お名前','name','フルネーム'];
-      const hit = headers.find(h => keys.some(k => stripBOM(h).includes(k)));
+      const hit = headers.find(h => stripBOM(h).includes ? keys.some(k => stripBOM(h).includes(k)) : false);
       return hit || '';
     }
 
@@ -172,7 +164,6 @@
       previewTable.appendChild(tbody);
     }
 
-    // —— 出力ファイル名のサフィックス —— //
     function deriveSuffixFromSourceName(filename) {
       if (!filename) return '';
       const base = filename.replace(/\.[^.]+$/, '');
@@ -189,6 +180,8 @@
     }
 
     // —— 名前分割 —— //
+    const NAME_DELIM = /[\t \/　・]+/; // 半/全角スペース・タブ・スラッシュ・中点
+
     function heuristicSplitKanji(s){
       for(const ln of Array.from(SURNAMES).sort((a,b)=>b.length-a.length)){
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
@@ -205,19 +198,16 @@
       let s = String(raw).trim();
       if (EMPTY_NAME_TOKENS.has(s)) return { last: '', first: '' };
 
-      const hasKanji = /[\u4E00-\u9FFF]/.test(s);
-      const hasLatin = /[A-Za-z]/.test(s);
-
-      // まず各種デリミタで試す（半/全角スペース、タブ、スラッシュ、・）
-      const delim = /[\t \/　・]+/;
-      if (delim.test(s)) {
-        const parts = s.split(delim).filter(Boolean);
+      // まずはデリミタで分割
+      if (NAME_DELIM.test(s)) {
+        const parts = s.split(NAME_DELIM).filter(Boolean);
         if (parts.length >= 2) {
-          const last = parts[0].trim();
-          const first = parts.slice(1).join(' ').trim();
-          return { last, first };
+          return { last: parts[0].trim(), first: parts.slice(1).join(' ').trim() };
         }
       }
+
+      const hasKanji = /[\u4E00-\u9FFF]/.test(s);
+      const hasLatin = /[A-Za-z]/.test(s);
 
       if (hasKanji) {
         if (stripAscii.checked) s = s.replace(/[A-Za-z\-_'`~!@#\$%\^&*()=+\[\]{}|;:\",.<>?]+/g, '').trim();
@@ -244,20 +234,38 @@
       return { last: s, first: '' };
     }
 
-    // —— 姓名が別列で来たケース —— //
+    // 分離列拾い：両方ある時だけ “確定”
     function pickSeparateNames(row){
       const keys = Object.keys(row || {});
-      // 正規化キー→元キーのマップ
       const map = new Map(keys.map(k => [normKey(k), k]));
       const lastKeyN  = LAST_NAME_KEYS.find(t => map.has(t));
       const firstKeyN = FIRST_NAME_KEYS.find(t => map.has(t));
       const last  = lastKeyN  ? String(row[ map.get(lastKeyN) ]  ?? '').trim() : '';
       const first = firstKeyN ? String(row[ map.get(firstKeyN) ] ?? '').trim() : '';
+
+      // 片側だけで、値に区切り（スペース/・/スラッシュ等）が含まれる ⇒ フルネームとみなす（確定扱いにしない）
+      const onlyOneSide = (!!lastKeyN ^ !!firstKeyN);
+      const oneVal = lastKeyN && !firstKeyN ? last : (!lastKeyN && firstKeyN ? first : '');
+      const looksFull = NAME_DELIM.test(oneVal);
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
-      return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: Boolean(lastKeyN || firstKeyN) };
+
+      // 両方あり：採用。両空なら未入力へ委ねる
+      if (lastKeyN && firstKeyN) {
+        return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: true };
+      }
+      // 片側のみでフルネームらしい：未確定（後段でnormalizeNameへ）
+      if (onlyOneSide && looksFull) {
+        return { last: '', first: '', found: false };
+      }
+      // 片側のみで単語っぽい：採用（残りは未入力補完へ）
+      if (onlyOneSide && !looksFull) {
+        return { last: lastKeyN ? last : '', first: firstKeyN ? first : '', found: true };
+      }
+      // どちらも無い
+      return { last: '', first: '', found: false };
     }
 
-    // —— サンプル列の採用 —— //
+    // サンプル列の採用
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
         sampleHeaders = meta.fields;
@@ -270,7 +278,7 @@
       }
     }
 
-    // —— CSVパース（ヘッダ正規化） —— //
+    // CSVパース（ヘッダBOM除去）
     async function parseFile(file,onDone){
       return new Promise(resolve=>{
         Papa.parse(file,{
@@ -307,7 +315,7 @@
       }
     }
 
-    // —— 入力読み込み —— //
+    // 入力読み込み
     sourceInput.addEventListener('change', async () => {
       const f = sourceInput.files && sourceInput.files[0];
       if (!f) return;
@@ -328,7 +336,7 @@
       });
     });
 
-    // —— サンプル読み込み —— //
+    // サンプル読み込み
     sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
       if(!f) return;
@@ -338,7 +346,6 @@
       });
     });
 
-    // —— 推定関数 —— //
     function looksCompanyLike(text){
       if(!text) return false;
       return /(株式会社|有限会社|合同会社|合資会社|合名会社|Inc\.?|LLC|GmbH|Ltd\.?|Co\.|Company|Holdings|HD|大学|研究所|機構|財団|社団)/i.test(text);
@@ -346,7 +353,7 @@
     function looksPositionLike(text){ return POSITION_KEYWORDS.test(text || ''); }
     function looksDepartmentLike(text){ return DEPT_KEYWORDS.test(text || ''); }
 
-    // —— 2500件ごとに分割保存 —— //
+    // 2500件ごとに分割保存
     function saveCsvChunks(rows, srcFileName, sampleHeaders){
       const suffix  = deriveSuffixFromSourceName(srcFileName);
       const base    = 'converted_admin_customer_list';
@@ -371,7 +378,7 @@
       }
     }
 
-    // —— 変換本体 —— //
+    // 変換
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
 
@@ -426,15 +433,17 @@
           if(depts.length) outRow['department'] = Array.from(new Set(depts)).join('\n');
         }
 
-        // 2) 氏名（分離列→氏名1列の順で決定）
+        // 2) 氏名決定
         let lastVal = '', firstVal = '';
         if (wantLast || wantFirst){
           const sep = pickSeparateNames(row);
           if (sep.found && (sep.last || sep.first)){
+            // 分離列として確定採用
             lastVal  = sep.last;
             firstVal = sep.first;
-          } else if (fullNameKey){
-            const rawName = String(row[fullNameKey] ?? '').trim();
+          } else {
+            // フルネーム（fullNameKeyが一方の列名でもOK）
+            const rawName = String(row[fullNameKey] ?? row['氏名'] ?? row['姓名'] ?? row['名前'] ?? '').trim();
             if (EMPTY_NAME_TOKENS.has(rawName.toLowerCase ? rawName.toLowerCase() : rawName)) {
               lastVal = ''; firstVal = '';
             } else {
@@ -462,7 +471,7 @@
       saveCsvChunks(out, srcName, sampleHeaders);
     });
 
-    // 起動時：ローカルのサンプルCSVを試す（失敗すれば既定列）
+    // 起動時：サンプルCSVを試す（失敗すれば既定列）
     fetchLocalSampleFallback();
   </script>
 </body>
