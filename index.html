@@ -349,8 +349,10 @@
           headers.map((h) => `<option>${h}</option>`).join('');
 
         let detected = tryAutoFullNameCol(headers);
-        // ★ フルネーム列が検出できない場合は「何も選ばない」
-        //   （企業名などの列を勝手に氏名扱いしない）
+        // ★ フルネーム列が検出できない場合は先頭列をフォールバック
+        if (!detected && headers.length > 0) {
+          detected = headers[0];
+        }
         fullNameColSelect.value = detected || '';
         setButtonState();
       });
@@ -401,7 +403,11 @@
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
 
-      const fullNameKey = fullNameColSelect.value || tryAutoFullNameCol(Object.keys(sourceRows[0] || {}));
+      const headers = Object.keys(sourceRows[0] || {});
+      const fullNameKey =
+        fullNameColSelect.value ||
+        tryAutoFullNameCol(headers) ||
+        (headers[0] || '');
 
       const wantLast  = sampleHeaders.includes('last_name')  || sampleHeaders.includes('姓');
       const wantFirst = sampleHeaders.includes('first_name') || sampleHeaders.includes('名');
@@ -458,14 +464,21 @@
           const sep = pickSeparateNames(row);
 
           if (sep.found){
-            // ★ 姓名列が存在する場合は、値が空でもここを優先
+            // 姓名列が存在する場合は、値が空でもここを優先
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
-            // フルネーム列から分割
-            const rawName =
-              (fullNameKey && row[fullNameKey] != null) ? row[fullNameKey] :
-              row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
+            // フルネーム列から分割（企業名は除外）
+            let rawName = '';
+            if (fullNameKey && row[fullNameKey] != null) {
+              const candidate = row[fullNameKey];
+              if (!looksCompanyLike(String(candidate))) {
+                rawName = candidate;
+              }
+            }
+            if (!rawName) {
+              rawName = row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
+            }
 
             if (EMPTY_NAME_TOKENS.has(String(rawName))) {
               lastVal = ''; firstVal = '';
