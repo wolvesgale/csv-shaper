@@ -82,7 +82,7 @@
       <ul>
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
         <li>姓/名が別列なら<strong>そのまま採用</strong>（空は自動で「未入力」補完）。</li>
-        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。不可なら「姓＝氏名／名＝※」、完全不明は両方「未入力」。</li>
+        <li>氏名1列は、まず半角/全角スペースがあれば<strong>その時点で姓・名に分割</strong>。無い場合のみ漢字ヒューリスティック等で補完。</li>
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
@@ -178,8 +178,10 @@
       return cleaned.slice(0, 80);
     }
 
-    // 区切り記号（スペース・タブ・中点・スラッシュ）
+    // 区切り記号（従来の複合）
     const NAME_DELIM = /[\t \/　・／]+/;
+    // 「スペースがあればそこですぐ分割」用：半角/全角スペースのみ
+    const NAME_SPACE_DELIM = /[ 　]+/;
 
     // 漢字名のヒューリスティック分割
     function heuristicSplitKanji(s){
@@ -199,7 +201,15 @@
       let s = String(raw).trim();
       if (EMPTY_NAME_TOKENS.has(s)) return { last: '', first: '' };
 
-      // まず明示的な区切りで分割
+      // ① まず半角/全角スペースで分割（ここが今回の要件）
+      if (NAME_SPACE_DELIM.test(s)) {
+        const parts = s.split(NAME_SPACE_DELIM).filter(Boolean);
+        if (parts.length >= 2) {
+          return { last: parts[0].trim(), first: parts.slice(1).join(' ').trim() };
+        }
+      }
+
+      // ② それ以外の区切り（・／など）がある場合
       if (NAME_DELIM.test(s)) {
         const parts = s.split(NAME_DELIM).filter(Boolean);
         if (parts.length >= 2) {
@@ -227,11 +237,7 @@
         return { first: s.slice(0, j).trim(), last: s.slice(j + 1).trim() };
       }
 
-      // かな等
-      const k = s.indexOf(' ');
-      if (k >= 0) return { last: s.slice(0,k).trim(), first: s.slice(k+1).trim() };
-      const l = s.indexOf('　');
-      if (l >= 0) return { last: s.slice(0,l).trim(), first: s.slice(l+1).trim() };
+      // かな等（スペースがあれば上の分岐で既に処理済み）
       return { last: s, first: '' };
     }
 
@@ -243,11 +249,8 @@
 
       for (const rawKey of keys) {
         const k = normKey(rawKey);
-
-        // 企業名/会社名などは first_name 候補から除外したいので先にチェック
         const isCompanyLikeHeader = /会社名|企業名|法人名|勤務先/.test(k);
 
-        // 姓候補
         if (!lastKey) {
           if (
             k === '姓' ||
@@ -259,7 +262,6 @@
           }
         }
 
-        // 名候補（会社名系は除く）
         if (!firstKey && !isCompanyLikeHeader) {
           if (
             k === '名' ||
@@ -277,12 +279,9 @@
 
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
 
-      // どちらか / 両方にヘッダがある場合は「姓名列が存在する」とみなす
       if (lastKey || firstKey) {
         return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: true };
       }
-
-      // 見つからなかった
       return { last: '', first: '', found: false };
     }
 
@@ -349,9 +348,8 @@
           headers.map((h) => `<option>${h}</option>`).join('');
 
         let detected = tryAutoFullNameCol(headers);
-        // ★ フルネーム列が検出できない場合は先頭列をフォールバック
         if (!detected && headers.length > 0) {
-          detected = headers[0];
+          detected = headers[0]; // ishigami.csv のような「ヘッダ=最初の氏名」形式に対応
         }
         fullNameColSelect.value = detected || '';
         setButtonState();
@@ -421,6 +419,7 @@
 
         // 1) ヘッダ一致はコピー
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
+
         // 1.5) 日本語→英語ヘッダマッピング
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
@@ -464,31 +463,45 @@
           const sep = pickSeparateNames(row);
 
           if (sep.found){
-            // 姓名列が存在する場合は、値が空でもここを優先
+            // 分離列がある場合はそれをまず採用
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
-            // フルネーム列から分割（企業名は除外）
+            // フルネーム候補
             let rawName = '';
+
             if (fullNameKey && row[fullNameKey] != null) {
-              const candidate = row[fullNameKey];
-              if (!looksCompanyLike(String(candidate))) {
-                rawName = candidate;
-              }
+              rawName = row[fullNameKey];
             }
+
             if (!rawName) {
-              rawName = row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
+              rawName =
+                row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
+            }
+
+            // どのキーも使えない場合、全列から「スペースを含む & 企業名らしくない」値を拾う
+            if (!rawName) {
+              for (const k of Object.keys(row || {})) {
+                const v = String(row[k] ?? '').trim();
+                if (!v) continue;
+                if (!NAME_SPACE_DELIM.test(v)) continue;
+                if (looksCompanyLike(v)) continue;
+                rawName = v;
+                break;
+              }
             }
 
             if (EMPTY_NAME_TOKENS.has(String(rawName))) {
               lastVal = ''; firstVal = '';
-            } else {
+            } else if (rawName) {
               const nm = normalizeName(rawName);
               lastVal  = (nm.last  ?? '').trim();
               firstVal = (nm.first ?? '').trim();
 
-              // 姓しか取れなかった時は名に「※」
+              // 姓だけ取れた場合は名に「※」を入れておく
               if (lastVal && !firstVal) firstVal = '※';
+            } else {
+              lastVal = ''; firstVal = '';
             }
           }
         }
