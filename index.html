@@ -277,16 +277,7 @@
 
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
 
-      // 片側だけあって、値に区切り記号が含まれている ⇒ フルネームとみなして後段へ
-      const onlyOneSide = (!!lastKey ^ !!firstKey);
-      const oneVal = lastKey && !firstKey ? last : (!lastKey && firstKey ? first : '');
-      const looksFull = NAME_DELIM.test(oneVal);
-
-      if (onlyOneSide && looksFull) {
-        return { last: '', first: '', found: false };
-      }
-
-      // どちらか / 両方に値がある ⇒ そのまま採用
+      // どちらか / 両方にヘッダがある場合は「姓名列が存在する」とみなす
       if (lastKey || firstKey) {
         return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: true };
       }
@@ -358,7 +349,8 @@
           headers.map((h) => `<option>${h}</option>`).join('');
 
         let detected = tryAutoFullNameCol(headers);
-        if (!detected && headers.length > 0) detected = headers[0];
+        // ★ フルネーム列が検出できない場合は「何も選ばない」
+        //   （企業名などの列を勝手に氏名扱いしない）
         fullNameColSelect.value = detected || '';
         setButtonState();
       });
@@ -464,8 +456,9 @@
         let lastVal = '', firstVal = '';
         if (wantLast || wantFirst){
           const sep = pickSeparateNames(row);
-          if (sep.found && (sep.last || sep.first)){
-            // 「姓」「名（あれば）」など分離列が見つかったケース
+
+          if (sep.found){
+            // ★ 姓名列が存在する場合は、値が空でもここを優先
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
@@ -473,18 +466,21 @@
             const rawName =
               (fullNameKey && row[fullNameKey] != null) ? row[fullNameKey] :
               row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
+
             if (EMPTY_NAME_TOKENS.has(String(rawName))) {
               lastVal = ''; firstVal = '';
             } else {
               const nm = normalizeName(rawName);
               lastVal  = (nm.last  ?? '').trim();
               firstVal = (nm.first ?? '').trim();
+
+              // 姓しか取れなかった時は名に「※」
               if (lastVal && !firstVal) firstVal = '※';
             }
           }
         }
 
-        // 2.5) 空は必ず「未入力」で補完（どちらか入っている場合はそちらを優先）
+        // 2.5) 最終ステップ：空欄は必ず「未入力」で補完
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
 
