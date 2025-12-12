@@ -187,6 +187,12 @@
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
       }
       const kanji = (s.match(/[\u4E00-\u9FFF]/g) || []).length;
+
+      // ★修正：漢字2文字以下は「全部姓扱い（名は空）」にする
+      if (kanji <= 2) {
+        return { last: s, first: '' };
+      }
+
       if(kanji >= 4) return { last: s.slice(0,2), first: s.slice(2) };
       if(kanji === 3) return { last: s.slice(0,1), first: s.slice(1) };
       const mid = Math.max(1, Math.floor(s.length/2));
@@ -235,7 +241,7 @@
       return { last: s, first: '' };
     }
 
-    // 「姓」「名（あれば）」など分離列を検出（元仕様＋片側だけスペース多い場合はフルネーム扱い）
+    // 「姓」「名（あれば）」など分離列を検出（既存仕様＋片側だけフルネームっぽいものは後段に回す）
     function pickSeparateNames(row){
       const keys = Object.keys(row || {});
       let lastKey = null;
@@ -275,16 +281,15 @@
 
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
 
-      // 片側だけ列がある & 値に区切り記号がある ⇒ それはフルネーム列とみなし、後段に回す
       const onlyOneSide = (!!lastKey ^ !!firstKey);
       const oneVal = lastKey && !firstKey ? last : (!lastKey && firstKey ? first : '');
       const looksFull = NAME_DELIM.test(oneVal);
 
       if (onlyOneSide && looksFull) {
+        // 片側だけで「山田 太郎」みたいなフルネームっぽい値なら後段に回す
         return { last: '', first: '', found: false };
       }
 
-      // どちらか / 両方に列がある ⇒ そのまま採用（空なら空として扱う）
       if (lastKey || firstKey) {
         return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: true };
       }
@@ -355,7 +360,7 @@
           headers.map((h) => `<option>${h}</option>`).join('');
 
         let detected = tryAutoFullNameCol(headers);
-        if (!detected && headers.length > 0) detected = headers[0]; // 旧仕様のまま
+        if (!detected && headers.length > 0) detected = headers[0];
         fullNameColSelect.value = detected || '';
         setButtonState();
       });
@@ -375,6 +380,18 @@
       if(!text) return false;
       return /(株式会社|有限会社|合同会社|合資会社|合名会社|Inc\.?|LLC|GmbH|Ltd\.?|Co\.|Company|Holdings|HD|大学|研究所|機構|財団|社団)/i.test(text);
     }
+
+    // ★会社名に余計な部署・役職っぽい文字が付いていたらカット
+    function cleanCompanyName(text){
+      if(!text) return '';
+      let s = String(text).trim();
+      const m = s.match(DEPT_KEYWORDS);
+      if (m && m.index > 0) {
+        s = s.slice(0, m.index).trim();
+      }
+      return s;
+    }
+
     function looksPositionLike(text){ return POSITION_KEYWORDS.test(text || ''); }
     function looksDepartmentLike(text){ return DEPT_KEYWORDS.test(text || ''); }
 
@@ -428,23 +445,34 @@
         // 1.5) 日本語→英語ヘッダマッピング
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
-            outRow[en] = row[jp];
+            let v = row[jp];
+            if (en === 'company_name') {
+              v = cleanCompanyName(v);
+            }
+            outRow[en] = v;
           }
         }
 
-        // 1.8) 会社/部署/役職の推定補完（既存仕様のまま）
+        // 1.8) 会社/部署/役職の推定補完
         if(sampleHeaders.includes('company_name') && !outRow['company_name']){
           const keys = Object.keys(row||{});
           for(let k of keys){
             const v = String(row[k] ?? '').trim();
             if(!v) continue;
-            if(looksCompanyLike(v)){ outRow['company_name']=v; break; }
+            if(looksCompanyLike(v)){
+              outRow['company_name'] = cleanCompanyName(v);
+              break;
+            }
           }
+          // ★以前は looksCompanyLike を見ずに keys[2] をそのまま入れていたので、ここを絞る
           if(!outRow['company_name'] && keys[2] && keys[2] !== fullNameKey){
             const v = String(row[keys[2]] ?? '').trim();
-            if(v) outRow['company_name'] = v;
+            if(v && looksCompanyLike(v)){
+              outRow['company_name'] = cleanCompanyName(v);
+            }
           }
         }
+
         if(sampleHeaders.includes('position') && !outRow['position']){
           const keys = Object.keys(row||{});
           for(let k of keys){
@@ -468,7 +496,6 @@
           const sep = pickSeparateNames(row);
 
           if (sep.found && (sep.last || sep.first)){
-            // 「姓」「名（あれば）」列がある場合はそのまま
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
@@ -497,7 +524,6 @@
               lastVal  = (nm.last  ?? '').trim();
               firstVal = (nm.first ?? '').trim();
 
-              // 姓だけ取れた場合は名に「※」
               if (lastVal && !firstVal) firstVal = '※';
             }
           }
