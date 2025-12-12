@@ -82,7 +82,7 @@
       <ul>
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
         <li>姓/名が別列なら<strong>そのまま採用</strong>（最後に空欄のみ「未入力」補完）。</li>
-        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。</li>
+        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。不可なら推定分割。</li>
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
@@ -110,7 +110,7 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 見出し→標準列マップ（★姓/名系も追加：ここが重要）
+    // 見出し→標準列マップ（姓/名の表記ゆれも吸い上げ）
     const headerMap = {
       '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
@@ -120,7 +120,7 @@
       '備考':'notes','メモ':'notes','注記':'notes',
       'サポーターID':'supporter_id','supporterId':'supporter_id',
 
-      // ★追加：姓名分離列をそのまま吸い上げる（既存仕様を壊さず安定化）
+      // 姓/名の表記ゆれ
       '姓':'last_name','苗字':'last_name','名字':'last_name',
       '名':'first_name','名前':'first_name',
       '名(あれば)':'first_name','名（あれば）':'first_name','名(任意)':'first_name','名（任意）':'first_name'
@@ -400,10 +400,10 @@
         tryAutoFullNameCol(headers) ||
         (headers[0] || '');
 
-      const lastKey  = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
-      const firstKey = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
-
       const out = [];
+
+      const outLastKey  = sampleHeaders.includes('last_name')  ? 'last_name'  : (sampleHeaders.includes('姓') ? '姓' : null);
+      const outFirstKey = sampleHeaders.includes('first_name') ? 'first_name' : (sampleHeaders.includes('名') ? '名' : null);
 
       for(const row of sourceRows){
         const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
@@ -411,7 +411,7 @@
         // 1) ヘッダ一致はコピー（既存仕様）
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
 
-        // 1.5) 日本語→英語ヘッダマッピング（★姓/名もここで入る）
+        // 1.5) 日本語→英語ヘッダマッピング（姓/名もここで入る）
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
             let v = row[jp];
@@ -426,7 +426,7 @@
           for(let k of keys){
             const v = String(row[k] ?? '').trim();
             if(!v) continue;
-            if(looksCompanyLike(v)){ outRow['company_name'] = cleanCompanyName(v); break; }
+            if(looksCompanyLike(v)){ outRow['company_name']=cleanCompanyName(v); break; }
           }
           if(!outRow['company_name'] && keys[2] && keys[2] !== fullNameKey){
             const v = String(row[keys[2]] ?? '').trim();
@@ -451,52 +451,47 @@
           if(depts.length) outRow['department'] = Array.from(new Set(depts)).join('\n');
         }
 
-        // 2) 氏名決定（★重要：既に入っている last/first は上書きしない）
-        let lastVal  = lastKey  ? String(outRow[lastKey]  ?? '').trim() : '';
-        let firstVal = firstKey ? String(outRow[firstKey] ?? '').trim() : '';
+        // 2) 氏名決定（★最重要：姓/名が1文字でも入っていたら絶対に上書きしない）
+        let lastVal  = outLastKey  ? String(outRow[outLastKey]  ?? '').trim() : '';
+        let firstVal = outFirstKey ? String(outRow[outFirstKey] ?? '').trim() : '';
 
-        const lastAlready  = !!lastVal && !EMPTY_NAME_TOKENS.has(lastVal);
-        const firstAlready = !!firstVal && !EMPTY_NAME_TOKENS.has(firstVal);
+        const hasLast  = !!lastVal  && !EMPTY_NAME_TOKENS.has(lastVal);
+        const hasFirst = !!firstVal && !EMPTY_NAME_TOKENS.has(firstVal);
 
-        // last/first のどちらかが既に入っているなら、それを尊重。
-        // 両方空のときだけ、分割や推定に進む（＝プレビュー通りの値が出力に乗る）
-        if (!(lastAlready || firstAlready)) {
+        // 両方空のときだけ解析ロジックに入る
+        if (!(hasLast || hasFirst)) {
           const sep = pickSeparateNames(row);
-
-          if (sep.found && (sep.last || sep.first)){
+          if (sep.found && (sep.last || sep.first)) {
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
-            // フルネーム列から分割（企業名らしい値は除外）
+            // フルネーム列から分割（企業名っぽい値は除外）
             let rawName = '';
-
             if (fullNameKey && row[fullNameKey] != null) {
               const candidate = String(row[fullNameKey]);
               if (!looksCompanyLike(candidate)) rawName = candidate;
             }
-
             if (!rawName) {
               const alt = row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
               if (alt && !looksCompanyLike(String(alt))) rawName = alt;
             }
 
-            if (!rawName || EMPTY_NAME_TOKENS.has(String(rawName))) {
-              lastVal = ''; firstVal = '';
-            } else {
+            if (rawName && !EMPTY_NAME_TOKENS.has(String(rawName).trim())) {
               const nm = normalizeName(rawName);
-              lastVal  = (nm.last  ?? '').trim();
-              firstVal = (nm.first ?? '').trim();
+              lastVal  = String(nm.last  ?? '').trim();
+              firstVal = String(nm.first ?? '').trim();
             }
           }
         }
 
-        // 2.5) 最終ステップ：空欄は必ず「未入力」で補完（※は一切使わない）
+        // 2.5) 最終：空欄のみ「未入力」
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
 
-        if (lastKey)  outRow[lastKey]  = lastVal;
-        if (firstKey) outRow[firstKey] = firstVal;
+        if (outLastKey)  outRow[outLastKey]  = lastVal;
+        if (outFirstKey) outRow[outFirstKey] = firstVal;
 
+        // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
       }
@@ -505,6 +500,7 @@
       saveCsvChunks(out, srcName, sampleHeaders);
     });
 
+    // 起動時：サンプルCSVを試す（失敗すれば既定列）
     fetchLocalSampleFallback();
   </script>
 </body>
