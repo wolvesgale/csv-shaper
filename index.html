@@ -110,7 +110,7 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 見出し→標準列マップ（姓/名の表記ゆれも吸い上げ）
+    // 見出し→標準列マップ（姓/名の表記ゆれ + 英語ヘッダも吸い上げ）
     const headerMap = {
       '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
@@ -120,10 +120,14 @@
       '備考':'notes','メモ':'notes','注記':'notes',
       'サポーターID':'supporter_id','supporterId':'supporter_id',
 
-      // 姓/名の表記ゆれ
+      // 姓/名
       '姓':'last_name','苗字':'last_name','名字':'last_name',
       '名':'first_name','名前':'first_name',
-      '名(あれば)':'first_name','名（あれば）':'first_name','名(任意)':'first_name','名（任意）':'first_name'
+      '名(あれば)':'first_name','名（あれば）':'first_name','名(任意)':'first_name','名（任意）':'first_name',
+
+      // 英語系（よくあるCSV）
+      'Last Name':'last_name','LAST NAME':'last_name','last name':'last_name','last_name':'last_name','LastName':'last_name','Surname':'last_name','SURNAME':'last_name',
+      'First Name':'first_name','FIRST NAME':'first_name','first name':'first_name','first_name':'first_name','FirstName':'first_name','Given Name':'first_name','GIVEN NAME':'first_name'
     };
 
     const POSITION_KEYWORDS = /(取締役|代表|社長|副社長|CEO|COO|CTO|CFO|CIO|Chief|会長|専務|常務|本部長|部長|次長|課長|マネージャ|Manager|Lead|リーダ|主任|役員|顧問|Advisor|部門長)/i;
@@ -143,7 +147,7 @@
     function setButtonState(){ convertBtn.disabled = !(sampleHeaders.length && sourceRows.length); }
 
     function tryAutoFullNameCol(headers){
-      const keys = ['氏名','姓名','名前','お名前','Name','name','フルネーム'];
+      const keys = ['氏名','姓名','名前','お名前','Name','name','フルネーム','Full Name','full_name','FullName'];
       const hit = headers.find(h => {
         const k = stripBOM(h);
         return keys.some(t => k.includes(t));
@@ -190,9 +194,7 @@
         if(s.startsWith(ln)) return { last: ln, first: s.slice(ln.length) };
       }
       const kanji = (s.match(/[\u4E00-\u9FFF]/g) || []).length;
-
       if (kanji <= 2) return { last: s, first: '' };
-
       if(kanji >= 4) return { last: s.slice(0,2), first: s.slice(2) };
       if(kanji === 3) return { last: s.slice(0,1), first: s.slice(1) };
       const mid = Math.max(1, Math.floor(s.length/2));
@@ -226,6 +228,7 @@
         s = s.replace(/\s+/g, ' ').trim();
         const j = s.lastIndexOf(' ');
         if (j === -1) return { last: s, first: '' };
+        // ラテンは「Given ... Surname」想定
         return { first: s.slice(0, j).trim(), last: s.slice(j + 1).trim() };
       }
 
@@ -248,7 +251,6 @@
         if (!lastKey) {
           if (k === '姓' || k === '苗字' || k === '名字' || /^姓\(/.test(k) || /^姓（/.test(k)) lastKey = rawKey;
         }
-
         if (!firstKey && !isCompanyLikeHeader) {
           if (
             k === '名' || k === '名前' ||
@@ -262,16 +264,33 @@
       const first = firstKey ? String(row[firstKey] ?? '').trim() : '';
 
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
-
       const onlyOneSide = (!!lastKey ^ !!firstKey);
       const oneVal = lastKey && !firstKey ? last : (!lastKey && firstKey ? first : '');
       const looksFull = NAME_DELIM.test(oneVal);
 
       if (onlyOneSide && looksFull) return { last: '', first: '', found: false };
-
       if (lastKey || firstKey) return { last: bothEmpty ? '' : last, first: bothEmpty ? '' : first, found: true };
-
       return { last: '', first: '', found: false };
+    }
+
+    // ★姓/名の入れ替わりを保守的に補正
+    function maybeSwapName(lastVal, firstVal){
+      const l = String(lastVal ?? '').trim();
+      const f = String(firstVal ?? '').trim();
+
+      if (!l || !f) return { last: l, first: f };
+      if (EMPTY_NAME_TOKENS.has(l) || EMPTY_NAME_TOKENS.has(f)) return { last: l, first: f };
+
+      // 会社名っぽい値が混ざってる場合は触らない（誤爆防止）
+      if (looksCompanyLike(l) || looksCompanyLike(f)) return { last: l, first: f };
+
+      // 「first に典型姓」「last に典型姓が無い」なら swap
+      const lastIsSurname = SURNAMES.has(l);
+      const firstIsSurname = SURNAMES.has(f);
+
+      if (firstIsSurname && !lastIsSurname) return { last: f, first: l };
+
+      return { last: l, first: f };
     }
 
     function adoptHeadersFromSample(meta){
@@ -411,7 +430,7 @@
         // 1) ヘッダ一致はコピー（既存仕様）
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
 
-        // 1.5) 日本語→英語ヘッダマッピング（姓/名もここで入る）
+        // 1.5) 日本語/英語ヘッダ→英語標準列へマッピング（既存仕様）
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
             let v = row[jp];
@@ -427,10 +446,6 @@
             const v = String(row[k] ?? '').trim();
             if(!v) continue;
             if(looksCompanyLike(v)){ outRow['company_name']=cleanCompanyName(v); break; }
-          }
-          if(!outRow['company_name'] && keys[2] && keys[2] !== fullNameKey){
-            const v = String(row[keys[2]] ?? '').trim();
-            if(v && looksCompanyLike(v)) outRow['company_name'] = cleanCompanyName(v);
           }
         }
 
@@ -451,21 +466,19 @@
           if(depts.length) outRow['department'] = Array.from(new Set(depts)).join('\n');
         }
 
-        // 2) 氏名決定（★最重要：姓/名が1文字でも入っていたら絶対に上書きしない）
+        // 2) 氏名決定（姓/名が1文字でも入っていたら上書きしない）
         let lastVal  = outLastKey  ? String(outRow[outLastKey]  ?? '').trim() : '';
         let firstVal = outFirstKey ? String(outRow[outFirstKey] ?? '').trim() : '';
 
         const hasLast  = !!lastVal  && !EMPTY_NAME_TOKENS.has(lastVal);
         const hasFirst = !!firstVal && !EMPTY_NAME_TOKENS.has(firstVal);
 
-        // 両方空のときだけ解析ロジックに入る
         if (!(hasLast || hasFirst)) {
           const sep = pickSeparateNames(row);
           if (sep.found && (sep.last || sep.first)) {
             lastVal  = sep.last;
             firstVal = sep.first;
           } else {
-            // フルネーム列から分割（企業名っぽい値は除外）
             let rawName = '';
             if (fullNameKey && row[fullNameKey] != null) {
               const candidate = String(row[fullNameKey]);
@@ -484,6 +497,11 @@
           }
         }
 
+        // ★入れ替わり補正（ここでだけ補正、既存仕様は維持）
+        const swapped = maybeSwapName(lastVal, firstVal);
+        lastVal = swapped.last;
+        firstVal = swapped.first;
+
         // 2.5) 最終：空欄のみ「未入力」
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
@@ -491,7 +509,6 @@
         if (outLastKey)  outRow[outLastKey]  = lastVal;
         if (outFirstKey) outRow[outFirstKey] = firstVal;
 
-        // 3) 1つでも値があれば採用
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
       }
@@ -500,7 +517,6 @@
       saveCsvChunks(out, srcName, sampleHeaders);
     });
 
-    // 起動時：サンプルCSVを試す（失敗すれば既定列）
     fetchLocalSampleFallback();
   </script>
 </body>
