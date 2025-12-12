@@ -82,7 +82,7 @@
       <ul>
         <li>サンプル列に<strong>完全準拠</strong>（無い列は破棄／足りない列は空欄補完）。</li>
         <li>姓/名が別列なら<strong>そのまま採用</strong>（空は自動で「未入力」補完）。</li>
-        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。不可なら「姓＝氏名／名＝※」、完全不明は両方「未入力」。</li>
+        <li>氏名1列は半角/全角スペース・タブ・中点・スラッシュを区切りに分割。不可なら「姓＝氏名／名＝未入力」にフォールバック。</li>
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
@@ -188,7 +188,7 @@
       }
       const kanji = (s.match(/[\u4E00-\u9FFF]/g) || []).length;
 
-      // ★修正：漢字2文字以下は「全部姓扱い（名は空）」にする
+      // 漢字2文字以下は「全部姓扱い（名は空）」にする
       if (kanji <= 2) {
         return { last: s, first: '' };
       }
@@ -241,7 +241,7 @@
       return { last: s, first: '' };
     }
 
-    // 「姓」「名（あれば）」など分離列を検出（既存仕様＋片側だけフルネームっぽいものは後段に回す）
+    // 「姓」「名（あれば）」など分離列を検出
     function pickSeparateNames(row){
       const keys = Object.keys(row || {});
       let lastKey = null;
@@ -281,12 +281,12 @@
 
       const bothEmpty = EMPTY_NAME_TOKENS.has(last) && EMPTY_NAME_TOKENS.has(first);
 
+      // 片側だけでフルネームっぽい値なら後段で扱う
       const onlyOneSide = (!!lastKey ^ !!firstKey);
       const oneVal = lastKey && !firstKey ? last : (!lastKey && firstKey ? first : '');
       const looksFull = NAME_DELIM.test(oneVal);
 
       if (onlyOneSide && looksFull) {
-        // 片側だけで「山田 太郎」みたいなフルネームっぽい値なら後段に回す
         return { last: '', first: '', found: false };
       }
 
@@ -381,7 +381,7 @@
       return /(株式会社|有限会社|合同会社|合資会社|合名会社|Inc\.?|LLC|GmbH|Ltd\.?|Co\.|Company|Holdings|HD|大学|研究所|機構|財団|社団)/i.test(text);
     }
 
-    // ★会社名に余計な部署・役職っぽい文字が付いていたらカット
+    // 会社名から部署/役職っぽい後ろの文字をカット
     function cleanCompanyName(text){
       if(!text) return '';
       let s = String(text).trim();
@@ -464,7 +464,6 @@
               break;
             }
           }
-          // ★以前は looksCompanyLike を見ずに keys[2] をそのまま入れていたので、ここを絞る
           if(!outRow['company_name'] && keys[2] && keys[2] !== fullNameKey){
             const v = String(row[keys[2]] ?? '').trim();
             if(v && looksCompanyLike(v)){
@@ -523,8 +522,6 @@
               const nm = normalizeName(rawName);
               lastVal  = (nm.last  ?? '').trim();
               firstVal = (nm.first ?? '').trim();
-
-              if (lastVal && !firstVal) firstVal = '※';
             }
           }
         }
