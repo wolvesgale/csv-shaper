@@ -86,7 +86,7 @@
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
-        <li><strong>追加</strong>：元CSV内に Facebook URL があれば <code>contact_url</code> に反映（既にURLがある場合は notes に追記）。</li>
+        <li><strong>追加</strong>：元CSV内の Facebook URL を <code>contact_url</code> に反映（既にURLがある場合は notes に追記）。</li>
       </ul>
     </details>
 
@@ -111,7 +111,6 @@
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
     ];
 
-    // 見出し→標準列マップ（姓/名の表記ゆれ + 英語ヘッダも吸い上げ）
     const headerMap = {
       '会社名':'company_name','社名':'company_name','企業名':'company_name','法人名':'company_name','勤務先':'company_name','勤務先名':'company_name',
       '会社番号':'company_number',
@@ -121,17 +120,17 @@
       '備考':'notes','メモ':'notes','注記':'notes',
       'サポーターID':'supporter_id','supporterId':'supporter_id',
 
-      // Facebookっぽいヘッダは contact_url に寄せる（あるなら確実に拾う）
+      // Facebook系ヘッダは contact_url に寄せる（列名が違っても拾いやすく）
       'Facebook':'contact_url','facebook':'contact_url','FB':'contact_url','fb':'contact_url',
       'Facebook URL':'contact_url','facebook url':'contact_url','FacebookURL':'contact_url','fb url':'contact_url',
-      'SNS':'notes','sns':'notes',
+      'Facebookリンク':'contact_url','Facebookリンク先':'contact_url','FacebookのURL':'contact_url','フェイスブック':'contact_url',
 
       // 姓/名
       '姓':'last_name','苗字':'last_name','名字':'last_name',
       '名':'first_name','名前':'first_name',
       '名(あれば)':'first_name','名（あれば）':'first_name','名(任意)':'first_name','名（任意）':'first_name',
 
-      // 英語系（よくあるCSV）
+      // 英語系
       'Last Name':'last_name','LAST NAME':'last_name','last name':'last_name','last_name':'last_name','LastName':'last_name','Surname':'last_name','SURNAME':'last_name',
       'First Name':'first_name','FIRST NAME':'first_name','first name':'first_name','first_name':'first_name','FirstName':'first_name','Given Name':'first_name','GIVEN NAME':'first_name'
     };
@@ -294,7 +293,6 @@
     function looksPositionLike(text){ return POSITION_KEYWORDS.test(text || ''); }
     function looksDepartmentLike(text){ return DEPT_KEYWORDS.test(text || ''); }
 
-    // ★姓/名の入れ替わりを保守的に補正
     function maybeSwapName(lastVal, firstVal){
       const l = String(lastVal ?? '').trim();
       const f = String(firstVal ?? '').trim();
@@ -310,38 +308,51 @@
       return { last: l, first: f };
     }
 
-    // ===== Facebook URL 取得ロジック（追加） =====
-    const FB_URL_RE = /(https?:\/\/)?(www\.)?(facebook\.com|fb\.com)\/[^\s"')]+/i;
+    // ===== Facebook URL 抽出（強化版）=====
+    // m.facebook.com / mbasic.facebook.com / fb.me 等も拾う
+    const FB_URL_RE = /((https?:\/\/)?(www\.)?((m|mbasic)\.)?(facebook\.com|fb\.com|fb\.me)\/[^\s"'<>，,]+)(?=$|[\s"'<>，,])/i;
 
     function normalizeUrl(u){
       if(!u) return '';
       let s = String(u).trim();
       if(!s) return '';
+      // 文章中の括弧や末尾記号を落とす
+      s = s.replace(/[)\]】』」]+$/g, '').trim();
       if (/^www\./i.test(s)) s = 'https://' + s;
       if (!/^https?:\/\//i.test(s)) {
-        // facebook.com/xxx みたいな形も https 付ける
-        if (/^(facebook\.com|fb\.com)\//i.test(s)) s = 'https://' + s;
+        if (/^((m|mbasic)\.)?facebook\.com\//i.test(s) || /^fb\.(com|me)\//i.test(s)) s = 'https://' + s;
       }
       return s;
     }
 
     function extractFacebookUrlFromRow(row){
-      // 1) Facebook系っぽいヘッダを優先
       const keys = Object.keys(row || {});
+
+      // 1) Facebookっぽい列名を優先
       for (const k of keys) {
         const nk = normKey(k).toLowerCase();
-        if (nk.includes('facebook') || nk === 'fb' || nk.includes('fb url')) {
-          const v = normalizeUrl(row[k]);
-          if (v && FB_URL_RE.test(v)) return v.match(FB_URL_RE)[0];
+        if (nk.includes('facebook') || nk === 'fb' || nk.includes('フェイスブック')) {
+          const raw = String(row[k] ?? '').trim();
+          if (!raw) continue;
+          const m = raw.match(FB_URL_RE);
+          if (m) return normalizeUrl(m[1]);
+          // URL単体じゃなくても facebook 文字があれば拾いに行く
+          if (raw.toLowerCase().includes('facebook') || raw.toLowerCase().includes('fb.me') || raw.toLowerCase().includes('fb.com')) {
+            const m2 = raw.match(FB_URL_RE);
+            if (m2) return normalizeUrl(m2[1]);
+          }
         }
       }
-      // 2) どの列でも facebook.com / fb.com が含まれていれば拾う
+
+      // 2) 全列スキャン（文章内に混在してても拾う）
       for (const k of keys) {
-        const v = String(row[k] ?? '').trim();
-        if (!v) continue;
-        const m = v.match(FB_URL_RE);
-        if (m) return normalizeUrl(m[0]);
+        const raw = String(row[k] ?? '').trim();
+        if (!raw) continue;
+        if (!/facebook\.com|fb\.com|fb\.me/i.test(raw)) continue;
+        const m = raw.match(FB_URL_RE);
+        if (m) return normalizeUrl(m[1]);
       }
+
       return '';
     }
 
@@ -352,8 +363,7 @@
       if (cur.includes(text)) return;
       outRow['notes'] = cur + '\n' + text;
     }
-
-    // ===== ここまで Facebook URL 追加 =====
+    // ===== ここまで Facebook URL =====
 
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
@@ -476,7 +486,7 @@
         // 1) ヘッダ一致はコピー（既存仕様）
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
 
-        // 1.5) 日本語/英語ヘッダ→英語標準列へマッピング（既存仕様）
+        // 1.5) 表記ゆれマッピング（既存仕様）
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
             let v = row[jp];
@@ -494,7 +504,6 @@
             if(looksCompanyLike(v)){ outRow['company_name']=cleanCompanyName(v); break; }
           }
         }
-
         if(sampleHeaders.includes('position') && !outRow['position']){
           const keys = Object.keys(row||{});
           for(let k of keys){
@@ -512,7 +521,7 @@
           if(depts.length) outRow['department'] = Array.from(new Set(depts)).join('\n');
         }
 
-        // 2) 氏名決定（姓/名が1文字でも入っていたら上書きしない）
+        // 2) 氏名決定
         let lastVal  = outLastKey  ? String(outRow[outLastKey]  ?? '').trim() : '';
         let firstVal = outFirstKey ? String(outRow[outFirstKey] ?? '').trim() : '';
 
@@ -534,7 +543,6 @@
               const alt = row['氏名'] ?? row['姓名'] ?? row['名前'] ?? row['お名前'] ?? '';
               if (alt && !looksCompanyLike(String(alt))) rawName = alt;
             }
-
             if (rawName && !EMPTY_NAME_TOKENS.has(String(rawName).trim())) {
               const nm = normalizeName(rawName);
               lastVal  = String(nm.last  ?? '').trim();
@@ -543,32 +551,28 @@
           }
         }
 
-        // ★入れ替わり補正（既存仕様は維持）
         const swapped = maybeSwapName(lastVal, firstVal);
         lastVal = swapped.last;
         firstVal = swapped.first;
 
-        // 2.5) 最終：空欄のみ「未入力」
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
 
         if (outLastKey)  outRow[outLastKey]  = lastVal;
         if (outFirstKey) outRow[outFirstKey] = firstVal;
 
-        // ===== Facebook URL 反映（追加：既存仕様に干渉しない後段処理） =====
+        // 3) Facebook URL を contact_url に反映（後段なので既存仕様を壊さない）
         if (sampleHeaders.includes('contact_url')) {
           const fb = extractFacebookUrlFromRow(row);
           if (fb) {
             const curUrl = String(outRow['contact_url'] ?? '').trim();
             if (!curUrl) {
               outRow['contact_url'] = fb;
-            } else if (!curUrl.includes('facebook.com') && !curUrl.includes('fb.com')) {
-              // contact_url が別URLのときは notes へ追記
+            } else if (!/facebook\.com|fb\.com|fb\.me/i.test(curUrl)) {
               if (sampleHeaders.includes('notes')) appendToNotes(outRow, `Facebook: ${fb}`);
             }
           }
         }
-        // ===== ここまで Facebook URL 反映 =====
 
         const hasAny = Object.values(outRow).some(v => (v!=null) && String(v).trim()!=='');
         if(hasAny) out.push(outRow);
