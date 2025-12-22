@@ -87,6 +87,7 @@
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
         <li><strong>追加</strong>：元CSV内の Facebook URL を <code>contact_url</code> に反映（既にURLがある場合は notes に追記）。</li>
+        <li><strong>追加</strong>：first_name だけ埋まっていて last_name が空、かつ first_name が「フルネームっぽい」場合は分割して補正。</li>
       </ul>
     </details>
 
@@ -120,17 +121,14 @@
       '備考':'notes','メモ':'notes','注記':'notes',
       'サポーターID':'supporter_id','supporterId':'supporter_id',
 
-      // Facebook系ヘッダは contact_url に寄せる（列名が違っても拾いやすく）
       'Facebook':'contact_url','facebook':'contact_url','FB':'contact_url','fb':'contact_url',
       'Facebook URL':'contact_url','facebook url':'contact_url','FacebookURL':'contact_url','fb url':'contact_url',
       'Facebookリンク':'contact_url','Facebookリンク先':'contact_url','FacebookのURL':'contact_url','フェイスブック':'contact_url',
 
-      // 姓/名
       '姓':'last_name','苗字':'last_name','名字':'last_name',
       '名':'first_name','名前':'first_name',
       '名(あれば)':'first_name','名（あれば）':'first_name','名(任意)':'first_name','名（任意）':'first_name',
 
-      // 英語系
       'Last Name':'last_name','LAST NAME':'last_name','last name':'last_name','last_name':'last_name','LastName':'last_name','Surname':'last_name','SURNAME':'last_name',
       'First Name':'first_name','FIRST NAME':'first_name','first name':'first_name','first_name':'first_name','FirstName':'first_name','Given Name':'first_name','GIVEN NAME':'first_name'
     };
@@ -309,14 +307,12 @@
     }
 
     // ===== Facebook URL 抽出（強化版）=====
-    // m.facebook.com / mbasic.facebook.com / fb.me 等も拾う
     const FB_URL_RE = /((https?:\/\/)?(www\.)?((m|mbasic)\.)?(facebook\.com|fb\.com|fb\.me)\/[^\s"'<>，,]+)(?=$|[\s"'<>，,])/i;
 
     function normalizeUrl(u){
       if(!u) return '';
       let s = String(u).trim();
       if(!s) return '';
-      // 文章中の括弧や末尾記号を落とす
       s = s.replace(/[)\]】』」]+$/g, '').trim();
       if (/^www\./i.test(s)) s = 'https://' + s;
       if (!/^https?:\/\//i.test(s)) {
@@ -327,8 +323,6 @@
 
     function extractFacebookUrlFromRow(row){
       const keys = Object.keys(row || {});
-
-      // 1) Facebookっぽい列名を優先
       for (const k of keys) {
         const nk = normKey(k).toLowerCase();
         if (nk.includes('facebook') || nk === 'fb' || nk.includes('フェイスブック')) {
@@ -336,15 +330,12 @@
           if (!raw) continue;
           const m = raw.match(FB_URL_RE);
           if (m) return normalizeUrl(m[1]);
-          // URL単体じゃなくても facebook 文字があれば拾いに行く
           if (raw.toLowerCase().includes('facebook') || raw.toLowerCase().includes('fb.me') || raw.toLowerCase().includes('fb.com')) {
             const m2 = raw.match(FB_URL_RE);
             if (m2) return normalizeUrl(m2[1]);
           }
         }
       }
-
-      // 2) 全列スキャン（文章内に混在してても拾う）
       for (const k of keys) {
         const raw = String(row[k] ?? '').trim();
         if (!raw) continue;
@@ -352,7 +343,6 @@
         const m = raw.match(FB_URL_RE);
         if (m) return normalizeUrl(m[1]);
       }
-
       return '';
     }
 
@@ -466,6 +456,16 @@
       }
     }
 
+    // ★追加：first_name しか埋まってない場合に「フルネーム扱い」で分割すべきか
+    function shouldReSplitFirstOnly(firstVal){
+      const s = String(firstVal ?? '').trim();
+      if(!s) return false;
+      if(EMPTY_NAME_TOKENS.has(s)) return false;
+      if(looksCompanyLike(s)) return false;
+      // 今回の新パターン（"立石 良太" / "Yoshiyuki Kaneko" 等）を確実に拾う
+      return NAME_DELIM.test(s);
+    }
+
     convertBtn.addEventListener('click', ()=>{
       if(!sampleHeaders.length || !sourceRows.length) return;
 
@@ -483,10 +483,10 @@
       for(const row of sourceRows){
         const outRow = Object.fromEntries(sampleHeaders.map(h=>[h,'']));
 
-        // 1) ヘッダ一致はコピー（既存仕様）
+        // 1) ヘッダ一致はコピー
         for(const h of sampleHeaders){ if(h in row) outRow[h] = row[h]; }
 
-        // 1.5) 表記ゆれマッピング（既存仕様）
+        // 1.5) 表記ゆれマッピング
         for(const [jp,en] of Object.entries(headerMap)){
           if(en && sampleHeaders.includes(en) && (jp in row) && String(row[jp]??'').trim()!==''){
             let v = row[jp];
@@ -495,7 +495,7 @@
           }
         }
 
-        // 1.8) 会社/部署/役職の推定補完（既存仕様）
+        // 1.8) 会社/部署/役職の推定補完
         if(sampleHeaders.includes('company_name') && !outRow['company_name']){
           const keys = Object.keys(row||{});
           for(let k of keys){
@@ -528,7 +528,15 @@
         const hasLast  = !!lastVal  && !EMPTY_NAME_TOKENS.has(lastVal);
         const hasFirst = !!firstVal && !EMPTY_NAME_TOKENS.has(firstVal);
 
-        if (!(hasLast || hasFirst)) {
+        // ★今回の新パターン対策（既存仕様は維持）
+        // first_name だけ埋まっていて last_name が空、かつ first がフルネームっぽい → そこから分割する
+        if (!hasLast && hasFirst && shouldReSplitFirstOnly(firstVal)) {
+          const nm = normalizeName(firstVal);
+          lastVal  = String(nm.last  ?? '').trim();
+          firstVal = String(nm.first ?? '').trim();
+        }
+
+        if (!(hasLast || hasFirst)){
           const sep = pickSeparateNames(row);
           if (sep.found && (sep.last || sep.first)) {
             lastVal  = sep.last;
@@ -555,13 +563,14 @@
         lastVal = swapped.last;
         firstVal = swapped.first;
 
+        // 最終補完は「未入力」（※は使わない）
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
 
         if (outLastKey)  outRow[outLastKey]  = lastVal;
         if (outFirstKey) outRow[outFirstKey] = firstVal;
 
-        // 3) Facebook URL を contact_url に反映（後段なので既存仕様を壊さない）
+        // 3) Facebook URL → contact_url 反映（後段なので既存挙動を壊さない）
         if (sampleHeaders.includes('contact_url')) {
           const fb = extractFacebookUrlFromRow(row);
           if (fb) {
