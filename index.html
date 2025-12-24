@@ -44,13 +44,27 @@
           <input id="sourceCsv" type="file" accept=".csv" />
         </div>
       </div>
+
       <div class="row">
+        <div class="col">
+          <label>文字コード（入力CSV）</label>
+          <select id="inputEncoding">
+            <option value="auto" selected>自動判定（推奨）</option>
+            <option value="utf-8">UTF-8</option>
+            <option value="shift_jis">Shift_JIS（CP932系）</option>
+          </select>
+          <p class="muted">※ 文字化けする場合は Shift_JIS を明示してください。</p>
+          <div id="encodingStatus" class="muted" style="margin-top:6px"></div>
+        </div>
         <div class="col">
           <label>フルネーム列（氏名/姓名など）</label>
           <select id="fullNameCol">
             <option value="">自動検出（氏名/姓名/名前/Name）</option>
           </select>
         </div>
+      </div>
+
+      <div class="row">
         <div class="col">
           <label>オプション</label>
           <div>
@@ -61,6 +75,7 @@
           </div>
         </div>
       </div>
+
       <div class="row"><div class="col"><button id="convertBtn" class="primary" disabled>③ 変換してダウンロード（UTF-8-SIG）</button></div></div>
     </div>
 
@@ -86,8 +101,9 @@
         <li>会社名/部署/役職は文面から推定して配置。</li>
         <li>サンプル未指定時は既定列：<code>company_name, company_number, last_name, first_name, department, position, contact_url, notes, supporter_id</code></li>
         <li>2500件超は<strong>2500件ごと</strong>に自動分割出力。</li>
-        <li><strong>追加</strong>：元CSV内の Facebook URL を <code>contact_url</code> に反映（既にURLがある場合は notes に追記）。</li>
-        <li><strong>追加</strong>：first_name だけ埋まっていて last_name が空、かつ first_name が「フルネームっぽい」場合は分割して補正。</li>
+        <li>元CSV内の Facebook URL を <code>contact_url</code> に反映（既にURLがある場合は notes に追記）。</li>
+        <li>first_name だけ埋まっていて last_name が空、かつ first_name が「フルネームっぽい」場合は分割して補正。</li>
+        <li><strong>追加</strong>：入力CSVの文字コードを自動判定（UTF-8/Shift_JIS）。</li>
       </ul>
     </details>
 
@@ -107,6 +123,8 @@
     const useZenkaku = document.getElementById('useZenkaku');
     const useHeuristic = document.getElementById('useHeuristic');
     const sampleStatus = document.getElementById('sampleStatus');
+    const inputEncoding = document.getElementById('inputEncoding');
+    const encodingStatus = document.getElementById('encodingStatus');
 
     const DEFAULT_TARGET_HEADERS = [
       'company_name','company_number','last_name','first_name','department','position','contact_url','notes','supporter_id'
@@ -330,10 +348,6 @@
           if (!raw) continue;
           const m = raw.match(FB_URL_RE);
           if (m) return normalizeUrl(m[1]);
-          if (raw.toLowerCase().includes('facebook') || raw.toLowerCase().includes('fb.me') || raw.toLowerCase().includes('fb.com')) {
-            const m2 = raw.match(FB_URL_RE);
-            if (m2) return normalizeUrl(m2[1]);
-          }
         }
       }
       for (const k of keys) {
@@ -355,6 +369,15 @@
     }
     // ===== ここまで Facebook URL =====
 
+    // ★追加：first_name しか埋まってない場合に「フルネーム扱い」で分割すべきか
+    function shouldReSplitFirstOnly(firstVal){
+      const s = String(firstVal ?? '').trim();
+      if(!s) return false;
+      if(EMPTY_NAME_TOKENS.has(s)) return false;
+      if(looksCompanyLike(s)) return false;
+      return NAME_DELIM.test(s);
+    }
+
     function adoptHeadersFromSample(meta){
       if(meta && meta.fields && meta.fields.length){
         sampleHeaders = meta.fields;
@@ -367,27 +390,66 @@
       }
     }
 
-    async function parseFile(file,onDone){
-      return new Promise(resolve=>{
-        Papa.parse(file,{
-          header:true,
-          skipEmptyLines:'greedy',
-          complete:(res)=>{
-            const rows = (res.data || []).map(r=>{
-              const o = {};
-              for(const k in r){
-                const nk = stripBOM(k);
-                o[nk] = r[k];
-              }
-              return o;
-            });
-            onDone(rows,res.meta||{});
-            resolve();
-          },
-          error:()=>{ onDone([],{}); resolve(); }
-        });
-      });
+    // ========= ここから：文字コード対応（追加要件） =========
+
+    function scoreMojibake(text){
+      if(!text) return 0;
+      const rep = (text.match(/\uFFFD/g) || []).length; // �
+      const odd = (text.match(/[�]/g) || []).length;    // 念のため
+      const typical = (text.match(/(縺|繧|繝|蟯|螳|驛|髮|譁|邨|險)/g) || []).length; // 典型的な化け（目安）
+      return rep * 10 + odd * 10 + typical * 2;
     }
+
+    async function readFileTextWithEncoding(file, enc){
+      const ab = await file.arrayBuffer();
+      const normalizeEnc = (e) => {
+        if (!e) return 'utf-8';
+        if (e === 'shift_jis') return 'shift-jis';
+        return e;
+      };
+
+      const decode = (encoding) => {
+        const dec = new TextDecoder(encoding, { fatal: false });
+        return dec.decode(ab);
+      };
+
+      if (enc && enc !== 'auto') {
+        return { text: decode(normalizeEnc(enc)), used: enc };
+      }
+
+      // auto: utf-8 → だめそうなら shift-jis
+      const utf8 = decode('utf-8');
+      const s1 = scoreMojibake(utf8);
+      const sjis = decode('shift-jis');
+      const s2 = scoreMojibake(sjis);
+
+      // score が低い方を採用
+      if (s2 + 1 < s1) return { text: sjis, used: 'shift_jis' };
+      return { text: utf8, used: 'utf-8' };
+    }
+
+    async function parseFile(file, onDone){
+      const { text, used } = await readFileTextWithEncoding(file, inputEncoding.value);
+      encodingStatus.textContent = `入力CSVは「${used === 'shift_jis' ? 'Shift_JIS' : 'UTF-8'}」として読込（自動/指定）`;
+
+      const res = Papa.parse(text, {
+        header: true,
+        skipEmptyLines: 'greedy'
+      });
+
+      const rows = (res.data || []).map(r=>{
+        const o = {};
+        for(const k in r){
+          const nk = stripBOM(k);
+          o[nk] = r[k];
+        }
+        return o;
+      });
+
+      onDone(rows, res.meta || {});
+    }
+
+    // ========= ここまで：文字コード対応 =========
 
     async function fetchLocalSampleFallback(){
       try{
@@ -403,6 +465,7 @@
       }
     }
 
+    // 入力CSV読み込み
     sourceInput.addEventListener('change', async () => {
       const f = sourceInput.files && sourceInput.files[0];
       if (!f) return;
@@ -423,12 +486,32 @@
       });
     });
 
+    // サンプルCSV読み込み（文字コード対応）
     sampleInput.addEventListener('change', async()=>{
       const f = sampleInput.files && sampleInput.files[0];
       if(!f) return;
-      Papa.parse(f,{
-        header:true, preview:1,
-        complete:(res)=>{ adoptHeadersFromSample(res.meta||{}); setButtonState(); }
+      await parseFile(f, (_rows, meta) => {
+        // 列定義用なので preview だけ欲しい → meta.fields を採用
+        adoptHeadersFromSample(meta || {});
+        setButtonState();
+      });
+    });
+
+    // エンコーディング変更時：読み込み済みファイルがあるなら再読込できるようにする（破壊しない）
+    inputEncoding.addEventListener('change', async()=>{
+      const f = sourceInput.files && sourceInput.files[0];
+      if (!f) return;
+      await parseFile(f, (rows) => {
+        sourceRows = rows;
+        renderPreview();
+        const headers = Object.keys(rows[0] || {});
+        fullNameColSelect.innerHTML =
+          '<option value="">自動検出（氏名/姓名/名前/Name）</option>' +
+          headers.map((h) => `<option>${h}</option>`).join('');
+        let detected = tryAutoFullNameCol(headers);
+        if (!detected && headers.length > 0) detected = headers[0];
+        fullNameColSelect.value = detected || '';
+        setButtonState();
       });
     });
 
@@ -454,16 +537,6 @@
         a.click();
         URL.revokeObjectURL(a.href);
       }
-    }
-
-    // ★追加：first_name しか埋まってない場合に「フルネーム扱い」で分割すべきか
-    function shouldReSplitFirstOnly(firstVal){
-      const s = String(firstVal ?? '').trim();
-      if(!s) return false;
-      if(EMPTY_NAME_TOKENS.has(s)) return false;
-      if(looksCompanyLike(s)) return false;
-      // 今回の新パターン（"立石 良太" / "Yoshiyuki Kaneko" 等）を確実に拾う
-      return NAME_DELIM.test(s);
     }
 
     convertBtn.addEventListener('click', ()=>{
@@ -528,8 +601,7 @@
         const hasLast  = !!lastVal  && !EMPTY_NAME_TOKENS.has(lastVal);
         const hasFirst = !!firstVal && !EMPTY_NAME_TOKENS.has(firstVal);
 
-        // ★今回の新パターン対策（既存仕様は維持）
-        // first_name だけ埋まっていて last_name が空、かつ first がフルネームっぽい → そこから分割する
+        // first_name だけ埋まっていて last_name が空、かつ first がフルネームっぽい → そこから分割
         if (!hasLast && hasFirst && shouldReSplitFirstOnly(firstVal)) {
           const nm = normalizeName(firstVal);
           lastVal  = String(nm.last  ?? '').trim();
@@ -563,14 +635,14 @@
         lastVal = swapped.last;
         firstVal = swapped.first;
 
-        // 最終補完は「未入力」（※は使わない）
+        // 最終補完は「未入力」
         if (!lastVal)  lastVal  = '未入力';
         if (!firstVal) firstVal = '未入力';
 
         if (outLastKey)  outRow[outLastKey]  = lastVal;
         if (outFirstKey) outRow[outFirstKey] = firstVal;
 
-        // 3) Facebook URL → contact_url 反映（後段なので既存挙動を壊さない）
+        // 3) Facebook URL → contact_url 反映
         if (sampleHeaders.includes('contact_url')) {
           const fb = extractFacebookUrlFromRow(row);
           if (fb) {
